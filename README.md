@@ -51,7 +51,7 @@ We define a **visual SKU** as:
 All preprocessing is driven by a single script:
 
 ```bash
-./prepare_deepfashion2_sku.sh
+./scripts/prepare_deepfashion2_sku.sh
 ```
 
 This script:
