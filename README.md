@@ -1,6 +1,6 @@
 # Rank-Supervised SKU Fingerprints for Low-Latency Generative Visual Search
 
-Final project for **10-423 / 10-623 / 10-723 Generative AI (CMU)**.
+Final project for **10-623 Generative AI (CMU)**.
 
 We aim to build a practical **fashion visual search system** where a user can:
 - upload a noisy phone photo (user / consumer image), or  
@@ -60,9 +60,9 @@ This script:
 2. For each split (train/validation/test):
    - Crops each clothing item using its bounding box.
    - Groups crops into **SKUs** based on `(pair_id, style, category_id)`.
-   - Saves cropped images into:
-     - `data/DeepFashion2_SKU/<split>/catalog/<sku_id>/*.jpg`
-     - `data/DeepFashion2_SKU/<split>/query/<sku_id>/*.jpg`
+   - Saves cropped images into (configurable via `SKU_ROOT`):
+     - `<SKU_ROOT>/<split>/catalog/<sku_id>/*.jpg`
+     - `<SKU_ROOT>/<split>/query/<sku_id>/*.jpg`
    - Writes a JSON file `<split>_sku_metadata.json` with all SKU-level metadata
      (including `occlusion` and `viewpoint` for each crop).
 3. Reads the SKU metadata and generates image–text pairs stored in
@@ -150,9 +150,9 @@ A simplified view of the repository:
 │   ├── train_vla_policy.py               # Train query pre-processing policy
 │   └── ...
 ├── scripts/
+│   ├── prepare_deepfashion2_sku.py       # One-command DF2 preprocessing
 │   ├── eval_retrieval.py                 # Compute Recall@K, mAP, etc.
 │   └── faiss_index_utils.py              # Build / query FAISS index
-├── prepare_deepfashion2_sku.sh           # One-command DF2 preprocessing
 ├── RUN.md                                # Detailed preprocessing instructions
 └── README.md                             # (this file)
 ```
@@ -176,15 +176,15 @@ pip install -r requirements.txt
 
 ### 5.2 Prepare DeepFashion2 and SKU data
 
-1. Download and unzip DeepFashion2 into `data/DeepFashion2_original/` (or any
+1. Download and unzip DeepFashion2 into `DF2_ROOT` (or any
    directory of your choice).
 
 2. Run the preprocessing script from the project root:
 
 ```bash
-chmod +x prepare_deepfashion2_sku.sh
+chmod +x ./scripts/prepare_deepfashion2_sku.sh
 
-DF2_ROOT=/path/to/DeepFashion2_original SKU_ROOT=data/DeepFashion2_SKU SPLITS="train validation test" ./prepare_deepfashion2_sku.sh
+DF2_ROOT=/path/to/DeepFashion2_original SKU_ROOT=/path/to_your_generated/DeepFashion2_SKU SPLITS="train validation test" ./scripts/prepare_deepfashion2_sku.sh
 ```
 
 3. After this step you should see:
@@ -233,13 +233,13 @@ Baselines to compare against:
   dataset with detailed annotations.
 - OpenAI / Google for CLIP / SigLIP models and open-sourced codebases
   that inspired the retriever baseline.
-- The 10-423/623/723 teaching staff and classmates for feedback on this project.
+- The 10-623 teaching staff and classmates for feedback on this project.
 
 ---
 
 ## 8. License
 
 This project is for educational and research purposes as part of
-10-423/623/723 Generative AI at CMU. Please check the DeepFashion2
+10-623 Generative AI at CMU. Please check the DeepFashion2
 license and any pretrained model licenses before using this code in
 commercial applications.

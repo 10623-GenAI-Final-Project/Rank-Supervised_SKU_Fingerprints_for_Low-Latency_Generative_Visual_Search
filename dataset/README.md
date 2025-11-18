@@ -50,7 +50,8 @@ dataset/
   build_deepfashion2_sku_crops.py
   build_deepfashion2_text_prompts.py
 
-prepare_deepfashion2_sku.sh
+scripts/
+  prepare_deepfashion2_sku.sh
 ```
 
 - `build_deepfashion2_sku_crops.py`  
@@ -86,8 +87,8 @@ pip install pillow tqdm
 From the **project root**, make the script executable and run it:
 
 ```bash
-chmod +x prepare_deepfashion2_sku.sh
-./prepare_deepfashion2_sku.sh
+chmod +x ./scripts/prepare_deepfashion2_sku.sh
+./scripts/prepare_deepfashion2_sku.sh
 ```
 
 By default the script assumes:
@@ -99,7 +100,7 @@ By default the script assumes:
 You can override any of these via environment variables:
 
 ```bash
-DF2_ROOT=/data/patrick/10623GenAI/final_proj/data/DeepFashion2_original SKU_ROOT=/data/patrick/10623GenAI/final_proj/data/DeepFashion2_SKU SPLITS="train validation" ./prepare_deepfashion2_sku.sh
+DF2_ROOT=/data/patrick/10623GenAI/final_proj/data/DeepFashion2_original SKU_ROOT=/data/patrick/10623GenAI/final_proj/data/DeepFashion2_SKU SPLITS="train validation" ./scripts/prepare_deepfashion2_sku.sh
 ```
 
 Where:
