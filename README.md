@@ -37,10 +37,7 @@ Each DF2 image has:
 
 We define a **visual SKU** as:
 
-
-$
-\text{SKU} = (\text{pair\_id}, \text{style} > 0, \text{category\_id})
-$
+`SKU = (pair_id, style > 0, category_id)`
 
 - Items with `style = 0` are discarded (cannot form positive commercial–consumer pairs).
 - All crops from images with `source = "shop"` are treated as **catalog** images.
