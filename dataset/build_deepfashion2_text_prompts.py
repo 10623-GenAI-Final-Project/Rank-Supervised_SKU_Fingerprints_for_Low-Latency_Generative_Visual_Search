@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import random
 from pathlib import Path
 
 
@@ -28,10 +29,10 @@ def viewpoint_suffix(viewpoint: int) -> str:
     return ""
 
 
-def build_prompt(category_name: str, domain: str,
-                 occlusion: int, viewpoint: int) -> str:
+def build_natural_prompt(category_name: str, domain: str,
+                         occlusion: int, viewpoint: int) -> str:
     """
-    Build a text prompt for one crop, using category, occlusion and viewpoint.
+    Build the natural-language part of the prompt (without SKU tokens).
 
     domain: "catalog" or "query".
     occlusion: 1 = slight/none, 2 = medium, 3 = heavy.
@@ -63,7 +64,33 @@ def build_prompt(category_name: str, domain: str,
         return f"A photo of a {occ}{category_name}."
 
 
-def process_split(split: str, sku_root: Path):
+def build_prompt(category_name: str,
+                 domain: str,
+                 occlusion: int,
+                 viewpoint: int,
+                 style: int,
+                 sku_id: str,
+                 sku_token_dropout: float = 0.0) -> str:
+    """
+    Build a text prompt for one crop.
+
+    First create a natural-language description, then optionally append
+    SKU-aware tokens "(style X, SKU Y)" with probability 1 - sku_token_dropout.
+
+    sku_token_dropout: probability of dropping the "(style, SKU)" suffix.
+    """
+    natural = build_natural_prompt(category_name, domain, occlusion, viewpoint)
+
+    # Decide whether to append the SKU tokens.
+    if sku_token_dropout > 0.0 and random.random() < sku_token_dropout:
+        # Drop SKU tokens: use natural-language only
+        return natural
+
+    # Keep SKU tokens: they act as extra supervision but are not required at eval time
+    return f"{natural} (style {style}, SKU {sku_id})"
+
+
+def process_split(split: str, sku_root: Path, sku_token_dropout: float):
     meta_path = sku_root / f"{split}_sku_metadata.json"
     if not meta_path.exists():
         raise FileNotFoundError(f"Metadata not found: {meta_path}")
@@ -75,6 +102,12 @@ def process_split(split: str, sku_root: Path):
 
     out_jsonl = sku_root / f"{split}_image_text.jsonl"
     num_entries = 0
+
+    # Typically we only apply dropout to the training split.
+    if split != "train":
+        effective_dropout = 1.0
+    else:
+        effective_dropout = sku_token_dropout
 
     with open(out_jsonl, "w") as f_out:
         for sku_id, info in skus.items():
@@ -93,7 +126,15 @@ def process_split(split: str, sku_root: Path):
                     occlusion = int(entry.get("occlusion", 1))
                     viewpoint = int(entry.get("viewpoint", 1))
 
-                    text = build_prompt(category_name, domain, occlusion, viewpoint)
+                    text = build_prompt(
+                        category_name=category_name,
+                        domain=domain,
+                        occlusion=occlusion,
+                        viewpoint=viewpoint,
+                        style=style,
+                        sku_id=sku_id,
+                        sku_token_dropout=effective_dropout,
+                    )
 
                     record = {
                         "split": split,
@@ -134,11 +175,20 @@ def main():
         default=["train", "validation", "test"],
         help="Splits to process.",
     )
+    parser.add_argument(
+        "--sku_token_dropout",
+        type=float,
+        default=0.5,
+        help=(
+            "Dropout probability for the '(style, SKU)' suffix during training. "
+            "Applied only to the 'train' split; val/test always keep natural text only."
+        ),
+    )
 
     args = parser.parse_args()
 
     for split in args.splits:
-        process_split(split, args.sku_root)
+        process_split(split, args.sku_root, args.sku_token_dropout)
 
 
 if __name__ == "__main__":

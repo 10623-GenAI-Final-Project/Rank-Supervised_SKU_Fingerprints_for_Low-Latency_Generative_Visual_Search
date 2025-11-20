@@ -36,7 +36,8 @@ echo
 # 2) Build image-text JSONL (prompts include occlusion + viewpoint).
 python dataset/build_deepfashion2_text_prompts.py \
   --sku_root "${SKU_ROOT}" \
-  --splits ${SPLITS}
+  --splits ${SPLITS} \
+  --sku_token_dropout 0.5
 
 echo
 echo "=== All done. Outputs are under ${SKU_ROOT} ==="
