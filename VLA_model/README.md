@@ -24,7 +24,7 @@ Perfect for:
 | **BG_REMOVE** | Background removal using GrabCut |
 | **DENOISE** | `fastNlMeansDenoisingColored` for noise reduction |
 | **WHITE_BALANCE** | Gray-world white balance (OpenCV + NumPy, platform-safe) |
-| **SHARPEN** | Unsharp masking using Gaussian blur |
+| **SHARPEN** | Sharpen masking using Gaussian blur |
 | **LIGHT_GEN_REFINE** | Light generative enhancement: denoise + sharpen blend |
 
 All functions follow the signature:
