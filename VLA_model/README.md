@@ -31,7 +31,7 @@ All functions follow the signature:
 
 ```python
 Callable[[Image.Image], Image.Image]
-
+```
 
 To test the function, use:
 ```bash
