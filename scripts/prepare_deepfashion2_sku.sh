@@ -4,12 +4,12 @@ set -euo pipefail
 # Root of original DeepFashion2 (must contain train/validation/test with image/annos).
 # You can override via environment variable:
 #   DF2_ROOT=/your/path/to/DeepFashion2_original ./prepare_deepfashion2_sku.sh
-DF2_ROOT=${DF2_ROOT:-"/data/patrick/10623GenAI/final_proj/data/DeepFashion2_original"}
+DF2_ROOT=${DF2_ROOT:-"/home/soinew/genAIdata/original"}
 
 # Output root for SKU crops and metadata.
 # You can override via:
 #   SKU_ROOT=/your/output/path ./prepare_deepfashion2_sku.sh
-SKU_ROOT=${SKU_ROOT:-"/data/patrick/10623GenAI/final_proj/data/DeepFashion2_SKU"}
+SKU_ROOT=${SKU_ROOT:-"/home/soinew/genAIdata/SKU"}
 
 # Splits to process. Default: train validation test
 # Override via:
