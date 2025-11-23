@@ -36,3 +36,4 @@ seaborn>=0.13.0
 pillow>=10.2.0
 opencv-python>=4.9.0.80
 opencv-contrib-python>=4.9.0.80
+scikit-image>=0.21.0
