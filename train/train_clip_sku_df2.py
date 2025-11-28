@@ -88,6 +88,18 @@ def parse_args():
         help="Minimum learning rate for cosine schedule.",
     )
     parser.add_argument(
+        "--clip_lr",
+        type=float,
+        default=1e-5,
+        help="Base learning rate for CLIP image encoder when partially finetuning.",
+    )
+    parser.add_argument(
+        "--clip_min_lr",
+        type=float,
+        default=1e-6,
+        help="Minimum learning rate for CLIP image encoder cosine schedule.",
+    )
+    parser.add_argument(
         "--warmup_ratio",
         type=float,
         default=0.05,
@@ -186,7 +198,36 @@ def parse_args():
             "will read 'train_image_text.dit_pretrained_aug.jsonl' "
             "instead of 'train_image_text.jsonl'."
         ),
-    )    
+    )
+    parser.add_argument(
+        "--partial_finetune",
+        action="store_true",
+        help=(
+            "If set, freeze the CLIP text encoder and only lightly finetune "
+            "the last few groups of the image encoder."
+        ),
+    )
+    parser.add_argument(
+        "--vision_unlocked_groups",
+        type=int,
+        default=1,
+        help=(
+            "Number of vision groups to unlock when --partial_finetune is set. "
+            "For ViT-B-16, 1 is usually enough."
+        ),
+    )
+    parser.add_argument(
+        "--text_loss_weight",
+        type=float,
+        default=0.25,
+        help="Weight of the text->SKU cross-entropy loss in the total loss.",
+    )
+    parser.add_argument(
+        "--resume_from",
+        type=Path,
+        default=None,
+        help="Optional checkpoint path to resume training from.",
+    )
     return parser.parse_args()
 
 
@@ -263,6 +304,7 @@ def compute_val_loss(
     model: ClipSkuBaseline,
     val_loader: DataLoader,
     device: torch.device,
+    text_loss_weight: float,
 ):
     """
     Compute validation loss and accuracy (image->SKU and text->SKU).
@@ -272,6 +314,8 @@ def compute_val_loss(
     total_img_acc = 0.0
     total_txt_acc = 0.0
     n_batches = 0
+
+    alpha = text_loss_weight
 
     for imgs, text_tokens, sku_idx, _domain in val_loader:
         imgs = imgs.to(device, non_blocking=True)
@@ -284,7 +328,7 @@ def compute_val_loss(
 
         loss_img = F.cross_entropy(logits_img, sku_idx)
         loss_txt = F.cross_entropy(logits_txt, sku_idx)
-        loss = 0.5 * (loss_img + loss_txt)
+        loss = (1.0 - alpha) * loss_img + alpha * loss_txt
 
         img_pred = logits_img.argmax(dim=-1)
         txt_pred = logits_txt.argmax(dim=-1)
@@ -306,6 +350,7 @@ def main():
     args = parse_args()
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
     args.output.parent.mkdir(parents=True, exist_ok=True)
+    best_ckpt_path = args.output.parent / f"{args.output.stem}_best.pt"
 
     # ----------------- W&B init -----------------
     if args.wandb:
@@ -400,13 +445,93 @@ def main():
         clip_model=clip_model,
         num_skus=num_skus,
         freeze_towers=args.freeze_towers,
+        partial_finetune=args.partial_finetune,
+        vision_unlocked_groups=args.vision_unlocked_groups,
     )
     model.to(device)
 
-    # 6) Optimizer over trainable parameters only.
-    params = [p for p in model.parameters() if p.requires_grad]
-    optimizer = optim.AdamW(params, lr=args.lr, weight_decay=args.weight_decay)
-    print(f"Trainable params: {sum(p.numel() for p in params):,}")
+    # 6) Optimizer with separate parameter groups for CLIP and SKU head.
+    clip_params: List[torch.nn.Parameter] = []
+    head_params: List[torch.nn.Parameter] = []
+
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            continue
+
+        # Everything that lives inside the CLIP model goes to the CLIP group.
+        # Adjust the prefix ("clip_model") if your attribute name is different.
+        if name.startswith("clip_model."):
+            clip_params.append(param)
+        else:
+            # SKU prototypes, logit_scale, and any extra heads go here.
+            head_params.append(param)
+
+    optimizer = optim.AdamW(
+        [
+            {
+                "params": clip_params,
+                "lr": args.clip_lr,
+                "weight_decay": args.weight_decay,
+            },
+            {
+                "params": head_params,
+                "lr": args.lr,
+                "weight_decay": 0.0,  # often better to not decay prototypes / logit_scale
+            },
+        ]
+    )
+
+    total_trainable = sum(p.numel() for p in clip_params + head_params)
+    print(f"Trainable params: {total_trainable:,}")
+    print(f"  - CLIP params: {sum(p.numel() for p in clip_params):,}")
+    print(f"  - Head params: {sum(p.numel() for p in head_params):,}")
+
+    # --- Optional: resume from checkpoint ---
+    global_step = 0
+    start_epoch = 1
+    best_recall_at1 = 0.0
+
+    if args.resume_from is not None:
+        ckpt_path = args.resume_from
+        print(f"[Resume] Loading checkpoint from {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location="cpu")
+
+        # Restore model weights
+        model.load_state_dict(ckpt["model_state"])
+
+        # Restore optimizer state if present
+        if "optimizer_state" in ckpt:
+            optimizer.load_state_dict(ckpt["optimizer_state"])
+        else:
+            print("[Resume] Warning: optimizer_state not found in checkpoint; "
+                  "optimizer will start from fresh state.")
+
+        # Sanity check: sku2idx mapping must match
+        if "sku2idx" in ckpt and ckpt["sku2idx"] != sku2idx:
+            raise ValueError(
+                "[Resume] sku2idx mapping in checkpoint does not match current data."
+            )
+
+        global_step = ckpt.get("global_step", 0)
+        # ckpt["epoch"] is the epoch index at the time of saving
+        prev_epoch = ckpt.get("epoch", 0)
+        start_epoch = prev_epoch + 1
+        best_recall_at1 = ckpt.get("best_recall_at1", 0.0)
+
+        print(
+            f"[Resume] Resumed from epoch={prev_epoch}, "
+            f"next start_epoch={start_epoch}, global_step={global_step}, "
+            f"best_recall_at1={best_recall_at1:.4f}"
+        )
+
+        # If someone resumes from a "final" checkpoint and keeps the same epochs,
+        # we avoid starting beyond the configured number of epochs.
+        if start_epoch > args.epochs:
+            print(
+                f"[Resume] start_epoch ({start_epoch}) > args.epochs ({args.epochs}), "
+                "clamping start_epoch to args.epochs."
+            )
+            start_epoch = args.epochs
 
     # 7) Cosine LR schedule with warmup (like train_reid_df2.py).
     num_train_batches = len(train_loader)
@@ -420,10 +545,11 @@ def main():
         f"({args.warmup_ratio * 100:.1f}% of total)"
     )
 
-    global_step = 0
-    best_recall_at1 = 0.0
+    # NOTE: global_step, start_epoch, best_recall_at1 were already
+    # initialized above and may have been overwritten by resume logic.
+    # Do NOT reset them here.
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         model.train()
         running_loss = 0.0
         running_img_loss = 0.0
@@ -443,27 +569,37 @@ def main():
 
             loss_img = F.cross_entropy(logits_img, sku_idx)
             loss_txt = F.cross_entropy(logits_txt, sku_idx)
-            loss = 0.5 * (loss_img + loss_txt)
+
+            alpha = args.text_loss_weight  # e.g. 0.25
+            loss = (1.0 - alpha) * loss_img + alpha * loss_txt
 
             loss.backward()
             optimizer.step()
 
             global_step += 1
 
-            # ---- cosine LR with warmup ----
+            # ---- cosine LR with warmup (separate for CLIP vs head) ----
             if global_step <= warmup_steps:
-                lr = base_lr * float(global_step) / float(warmup_steps)
+                # Linear warmup
+                clip_lr = args.clip_lr * float(global_step) / float(warmup_steps)
+                head_lr = args.lr * float(global_step) / float(warmup_steps)
             else:
                 progress = float(global_step - warmup_steps) / float(
                     max(1, total_steps - warmup_steps)
                 )
                 progress = min(max(progress, 0.0), 1.0)
-                lr = min_lr + 0.5 * (base_lr - min_lr) * (
+
+                clip_lr = args.clip_min_lr + 0.5 * (args.clip_lr - args.clip_min_lr) * (
                     1.0 + math.cos(math.pi * progress)
                 )
-            for param_group in optimizer.param_groups:
-                param_group["lr"] = lr
-            # -------------------------------
+                head_lr = args.min_lr + 0.5 * (args.lr - args.min_lr) * (
+                    1.0 + math.cos(math.pi * progress)
+                )
+
+            # param_groups[0] is CLIP, param_groups[1] is head
+            optimizer.param_groups[0]["lr"] = clip_lr
+            optimizer.param_groups[1]["lr"] = head_lr
+            # -----------------------------------------------------------
 
             running_loss += loss.item()
             running_img_loss += loss_img.item()
@@ -488,7 +624,8 @@ def main():
                         "train/loss": float(loss.item()),
                         "train/loss_img": float(loss_img.item()),
                         "train/loss_txt": float(loss_txt.item()),
-                        "train/lr": float(optimizer.param_groups[0]["lr"]),
+                        "train/clip_lr": float(optimizer.param_groups[0]["lr"]),
+                        "train/head_lr": float(optimizer.param_groups[1]["lr"]),
                         "epoch": epoch,
                     },
                     step=global_step,
@@ -511,6 +648,7 @@ def main():
                     model=model,
                     val_loader=val_loader,
                     device=device,
+                    text_loss_weight=args.text_loss_weight,
                 )
 
                 print(
@@ -575,9 +713,23 @@ def main():
                     else:
                         print(f"  {k}: {v:.4f}")
 
-                if val_metrics.get("Recall@1", 0.0) > best_recall_at1:
-                    best_recall_at1 = val_metrics["Recall@1"]
+                current_recall1 = val_metrics.get("Recall@1", 0.0)
+                if current_recall1 > best_recall_at1:
+                    best_recall_at1 = current_recall1
                     print(f"[Eval] New best Recall@1: {best_recall_at1:.4f}")
+
+                    # ---- save best checkpoint ----
+                    best_ckpt = {
+                        "model_state": model.state_dict(),
+                        "optimizer_state": optimizer.state_dict(),
+                        "sku2idx": sku2idx,
+                        "args": vars(args),
+                        "epoch": epoch,
+                        "global_step": global_step,
+                        "best_recall_at1": best_recall_at1,
+                    }
+                    torch.save(best_ckpt, best_ckpt_path)
+                    print(f"[Eval] Saved new best checkpoint to {best_ckpt_path}")
 
                 # W&B validation logging
                 if args.wandb:
@@ -602,10 +754,12 @@ def main():
                 ckpt_path = ckpt_dir / f"{args.output.stem}_step{global_step}.pt"
                 ckpt = {
                     "model_state": model.state_dict(),
+                    "optimizer_state": optimizer.state_dict(),
                     "sku2idx": sku2idx,
                     "args": vars(args),
                     "epoch": epoch,
                     "global_step": global_step,
+                    "best_recall_at1": best_recall_at1,
                 }
                 torch.save(ckpt, ckpt_path)
                 print(f"[Checkpoint] Saved: {ckpt_path}")
@@ -616,10 +770,12 @@ def main():
     # ----------------- Final checkpoint (last epoch, last iteration) -----------------
     final_ckpt = {
         "model_state": model.state_dict(),
+        "optimizer_state": optimizer.state_dict(),
         "sku2idx": sku2idx,
         "args": vars(args),
         "epoch": args.epochs,
         "global_step": global_step,
+        "best_recall_at1": best_recall_at1,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     torch.save(final_ckpt, args.output)
