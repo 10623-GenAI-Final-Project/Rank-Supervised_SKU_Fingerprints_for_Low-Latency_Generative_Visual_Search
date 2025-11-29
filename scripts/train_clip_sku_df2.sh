@@ -144,7 +144,6 @@ CUDA_VISIBLE_DEVICES=0 python -m train.train_clip_sku_df2 \
   --weight_decay 1e-4 \
   --num_workers 8 \
   --device cuda \
-  --freeze_towers False \
   --partial_finetune \
   --vision_unlocked_groups 2 \
   --text_loss_weight 0.10 \

@@ -10,11 +10,14 @@
 # Eval Baseline1
 ./scripts/eval_baseline1_reid_val.sh
 
-# Train Baseline2/3
+# Train Baseline2/3/4
 ./scripts/train_clip_sku_df2.sh
 
-# Eval Baseline2/3
+# Eval Baseline2/3/4
 ./scripts/eval_clip_sku_df2.sh
 
 # DiT Augmented Multi-view (only inference now)
 ./scripts/gen_dit_aug_df2.sh
+
+# Train Baseline5
+./scripts/train_baseline.only4.sh 5
