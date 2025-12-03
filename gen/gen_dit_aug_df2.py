@@ -88,6 +88,8 @@ def iter_catalog_entries(
     sku_root: Path,
     split: str,
     max_skus: int | None = None,
+    shuffle=False,
+    seed=42,
 ) -> Iterator[Tuple[str, Dict, Dict, Path]]:
     """
     Yield (sku_id, sku_info, catalog_entry, abs_path) over all ORIGINAL catalog crops.
@@ -97,6 +99,11 @@ def iter_catalog_entries(
     """
     skus = meta["skus"]
     items = list(skus.items())  # snapshot of SKUs
+
+    if shuffle:
+        random.seed(seed)
+        random.shuffle(items)
+
     if max_skus is not None:
         items = items[:max_skus]
 
@@ -224,7 +231,7 @@ def setup_clip(
 
     # our own pretrained CLIP-SKU 
     print(f"[CLIP] Loading fine-tuned CLIP-SKU checkpoint from {clip_sku_ckpt}")
-    ckpt = torch.load(clip_sku_ckpt, map_location="cpu")
+    ckpt = torch.load(clip_sku_ckpt, map_location="cpu", weights_only=False)
     sku2idx = ckpt["sku2idx"]
     num_skus = len(sku2idx)
 
@@ -416,6 +423,8 @@ def augment_sku_multiview(
     num_views: int,
     sim_thresh: float,
     color_max_diff: float,
+    mv_subdir: str,
+    mv_suffix: str,
 ) -> None:
     """
     Multi-view synthesis for a single catalog crop (same SKU id).
@@ -475,8 +484,8 @@ def augment_sku_multiview(
             entry=entry,
             gen_idx=gen_idx,
             img=gen_img,
-            subdir="catalog_dit",
-            suffix="aug",  # [NEW] explicit suffix for multiview augmentation
+            subdir=mv_subdir,
+            suffix=mv_suffix,
         )
 
         new_image_id = f"{entry['image_id']}_aug{gen_idx:02d}"
@@ -534,6 +543,8 @@ def augment_sku_counterfactual(
     sim_min: float,
     sim_max: float,
     color_min_diff: float,
+    cf_subdir: str,
+    cf_suffix: str,
 ) -> None:
     """
     Counterfactual negatives: change color while preserving shape.
@@ -602,8 +613,8 @@ def augment_sku_counterfactual(
             entry=entry,
             gen_idx=cf_idx,
             img=gen_img,
-            subdir="catalog_cf",
-            suffix="cf",  # [NEW] explicit suffix for counterfactual images
+            subdir=cf_subdir,
+            suffix=cf_suffix,
         )
         new_image_id = f"{entry['image_id']}_cf{cf_idx:02d}"
 
@@ -708,6 +719,19 @@ def parse_args():
         default=0.20,
         help="Maximum HSV distance allowed for multi-view (<=).",
     )
+    parser.add_argument(
+        "--mv_subdir",
+        type=str,
+        default="catalog_dit",
+        help="Subdirectory under <split>/ to save multi-view images, e.g. 'catalog_dit'.",
+    )
+    parser.add_argument(
+        "--mv_suffix",
+        type=str,
+        default="aug",
+        help="Filename suffix for multi-view images, e.g. 'aug' -> *_aug01.jpg.",
+    )
+
     # Counterfactual params
     parser.add_argument(
         "--num_counterfactual",
@@ -732,6 +756,18 @@ def parse_args():
         type=float,
         default=0.30,
         help="Minimum HSV distance required for counterfactual.",
+    )
+    parser.add_argument(
+        "--cf_subdir",
+        type=str,
+        default="catalog_cf",
+        help="Subdirectory under <split>/ to save counterfactual images, e.g. 'catalog_cf'.",
+    )
+    parser.add_argument(
+        "--cf_suffix",
+        type=str,
+        default="cf",
+        help="Filename suffix for counterfactual images, e.g. 'cf' -> *_cf01.jpg.",
     )
     # Device / model
     parser.add_argument(
@@ -797,6 +833,17 @@ def parse_args():
             "If provided, we will use its fine-tuned image encoder for gating."
         ),
     )
+    parser.add_argument(
+        "--shuffle_skus",
+        action="store_true",
+        help="Shuffle SKU order before applying max_skus (for random subset).",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for SKU shuffling.",
+    )
 
     return parser.parse_args()
 
@@ -832,6 +879,11 @@ def main():
     # Pre-compute total number of catalog crops for tqdm
     skus = meta["skus"]
     items = list(skus.items())
+
+    if args.shuffle_skus:
+        random.seed(args.seed)
+        random.shuffle(items)
+
     if args.max_skus is not None:
         items = items[: args.max_skus]
     total_catalog = sum(len(info.get("catalog", [])) for _, info in items)
@@ -843,7 +895,9 @@ def main():
     ) as pbar:    
 
         for sku_id, sku_info, entry, crop_abs in iter_catalog_entries(
-            meta, sku_root, split, max_skus=args.max_skus
+            meta, sku_root, split, max_skus=args.max_skus,
+            shuffle=args.shuffle_skus,
+            seed=args.seed,            
         ):
             if not crop_abs.exists():
                 print(f"[WARN] Missing crop image: {crop_abs}")
@@ -867,6 +921,8 @@ def main():
                 num_views=num_views,
                 sim_thresh=args.mv_sim_thresh,
                 color_max_diff=args.mv_color_max_diff,
+                mv_subdir=args.mv_subdir,
+                mv_suffix=args.mv_suffix,
             )
 
             # (2) Counterfactual negatives (new SKU ids), usually only on train split.
@@ -889,6 +945,8 @@ def main():
                     sim_min=args.cf_sim_min,
                     sim_max=args.cf_sim_max,
                     color_min_diff=args.cf_color_min_diff,
+                    cf_subdir=args.cf_subdir,
+                    cf_suffix=args.cf_suffix,
                 )
 
             pbar.update(1)
