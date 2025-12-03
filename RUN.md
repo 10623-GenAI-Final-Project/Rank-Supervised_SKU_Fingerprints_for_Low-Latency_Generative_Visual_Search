@@ -17,7 +17,8 @@
 ./scripts/eval_clip_sku_df2.sh
 
 # DiT Augmented Multi-view (only inference now)
-./scripts/gen_dit_aug_df2.sh
+# ./scripts/gen_dit_aug_df2.sh
+./scripts/gen_dit_aug_df2_light.sh 3
 
 # Train Baseline5
 ./scripts/train_baseline.only4.sh 5
