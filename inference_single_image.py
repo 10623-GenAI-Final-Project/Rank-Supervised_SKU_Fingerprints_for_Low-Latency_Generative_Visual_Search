@@ -1,73 +1,67 @@
-from train.generate_labels import generate_labels
+#!/usr/bin/env python3
+"""
+Inference script for single image SKU prediction using trained ClipSkuBaseline model.
+
+Usage:
+    python inference_single_image.py \
+        --checkpoint checkpoints/clip_sku_baseline_final.pt \
+        --image path/to/your/image.jpg \
+        --clip_model ViT-B-16 \
+        --clip_pretrained laion2b_s34b_b88k
+"""
+##/home/soinew/genAIdata/SKU/train/query/000003_02_02/000010_item1.jpg
 import argparse
-import pickle
-import open_clip
 from pathlib import Path
 from PIL import Image
 import torch
-import sys
-import os
-# Add project root to Python path
-project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, project_root)
+import open_clip
+
 from models.clip_sku_baseline import ClipSkuBaseline
-from dataset.df2_clip_sku_dataset import DeepFashion2ImageSkuEvalDataset
-from torch.utils.data import Dataset,DataLoader
-from torchvision.datasets import DatasetFolder
+
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Generate image-label pairs for VLA"
+        description="Inference on a single image using trained ClipSkuBaseline model."
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default= "data/modelforVLA.pt",
+        required=True,
+        help="Path to trained model checkpoint (.pt file).",
+    )
+    parser.add_argument(
+        "--image",
+        type=Path,
+        required=True,
+        help="Path to input image.",
     )
     parser.add_argument(
         "--clip_model",
         type=str,
         default="ViT-B-16",
-        help="open_clip model name (e.g., ViT-B-16).",
+        help="CLIP model name (must match training).",
     )
-    
     parser.add_argument(
         "--clip_pretrained",
         type=str,
         default="laion2b_s34b_b88k",
-        help="open_clip pretrained tag.",
+        help="CLIP pretrained tag (must match training).",
     )
-    
-    parser.add_argument(
-        "--output_path",
-        type=str,
-        default="/home/soinew/genAIdata/VLA/labels.pkl",
-        help="open_clip pretrained tag.",
-    )
-    
-    parser.add_argument(
-        "--checkpoint",
-        type=Path,
-        default= "data/modelforVLA.pt",
-        help="Path to trained model checkpoint (.pt file).",
-    )
-
-    parser.add_argument(
-        "--top_k",
-        type=int,
-        default=5,
-        help="Number of top SKU predictions to return.",
-    )
-
-    parser.add_argument(
-        "--image_load",
-        type=str,
-        default="/home/soinew/genAIdata/dataforVLA",
-        help="Image load path.",
-    )
-
     parser.add_argument(
         "--device",
         type=str,
         default="cuda" if torch.cuda.is_available() else "cpu",
         help="Device to run inference on.",
     )
+    parser.add_argument(
+        "--top_k",
+        type=int,
+        default=5,
+        help="Number of top SKU predictions to return.",
+    )
     return parser.parse_args()
+
 
 def load_model(checkpoint_path: Path, clip_model_name: str, clip_pretrained: str, device: str):
     """
@@ -91,9 +85,9 @@ def load_model(checkpoint_path: Path, clip_model_name: str, clip_pretrained: str
     # Create inverse mapping: index -> sku_id
     idx2sku = {idx: sku_id for sku_id, idx in sku2idx.items()}
     
-    # print(f"Model trained with {num_skus} SKUs")
-    # print(f"CLIP model: {args.get('clip_model', clip_model_name)}")
-    # print(f"CLIP pretrained: {args.get('clip_pretrained', clip_pretrained)}")
+    print(f"Model trained with {num_skus} SKUs")
+    print(f"CLIP model: {args.get('clip_model', clip_model_name)}")
+    print(f"CLIP pretrained: {args.get('clip_pretrained', clip_pretrained)}")
     
     # Create CLIP model (must match training)
     clip_model, _, preprocess = open_clip.create_model_and_transforms(
@@ -115,11 +109,9 @@ def load_model(checkpoint_path: Path, clip_model_name: str, clip_pretrained: str
     
     print("Model loaded successfully!")
     return model, idx2sku, preprocess
-    
 
 
-
-def predict_sku(image, model: ClipSkuBaseline, preprocess, device: str, top_k: int = 5):
+def predict_sku(image_path: Path, model: ClipSkuBaseline, preprocess, device: str, top_k: int = 5):
     """
     Predict SKU for a single image.
     
@@ -134,7 +126,7 @@ def predict_sku(image, model: ClipSkuBaseline, preprocess, device: str, top_k: i
         predictions: List of (sku_idx, sku_id, score) tuples, sorted by score
     """
     # Load and preprocess image
-    img = image
+    img = Image.open(image_path).convert("RGB")
     img_tensor = preprocess(img).unsqueeze(0).to(device)  # Add batch dimension: (1, 3, H, W)
     
     # Get image embedding
@@ -161,9 +153,14 @@ def predict_sku(image, model: ClipSkuBaseline, preprocess, device: str, top_k: i
     
     return predictions
 
-def score(image):
+
+def main():
     args = parse_args()
     device = torch.device(args.device)
+    
+    # Check if image exists
+    if not args.image.exists():
+        raise FileNotFoundError(f"Image not found: {args.image}")
     
     # Load model
     model, idx2sku, preprocess = load_model(
@@ -174,8 +171,8 @@ def score(image):
     )
     
     # Predict SKU
-    print(f"\nPredicting SKU for image: {image}")
-    predictions = predict_sku(image, model, preprocess, device, args.top_k)
+    print(f"\nPredicting SKU for image: {args.image}")
+    predictions = predict_sku(args.image, model, preprocess, device, args.top_k)
     
     # Print results
     print(f"\nTop {args.top_k} SKU predictions:")
@@ -190,48 +187,7 @@ def score(image):
     top_sku_id = idx2sku[top_sku_idx]
     print(f"\nPredicted SKU: {top_sku_id} (score: {top_score:.4f})")
 
-    return top_score
-
-class ImageFolderDataset(Dataset):
-    def __init__(self, folder, transform=None):
-        self.folder = folder
-        self.transform = transform
-        self.images = [
-            f for f in os.listdir(folder)
-            if f.lower().endswith((".jpg", ".jpeg", ".png"))
-        ]
-
-    def __len__(self):
-        return len(self.images)
-
-    def __getitem__(self, idx):
-        img_name = self.images[idx]
-        img_path = os.path.join(self.folder, img_name)
-        img = Image.open(img_path).convert("RGB")
-
-        if self.transform:
-            img = self.transform(img)
-
-        return img, img_name   # return both image and filename
-
-
-def main():
-    args = parse_args()
-    clip_model, _, preprocess = open_clip.create_model_and_transforms(
-        args.clip_model, pretrained=args.clip_pretrained
-    )
-    dataset = ImageFolderDataset(args.image_load)
-    def single_sample_collate(batch):
-    # batch is a list with one element when batch_size=1
-        return batch[0]
-    loader = DataLoader(dataset, batch_size=1, shuffle=False,collate_fn=single_sample_collate,)
-    samples = generate_labels(loader, score, clip_model, preprocess)
-    print(len(samples))
-    save_dir = args.output_path
-    with open(save_dir, "wb") as f:
-        pickle.dump(samples, f)
-
-    print(f"Saved label samples to {save_dir}")
 
 if __name__ == "__main__":
     main()
+

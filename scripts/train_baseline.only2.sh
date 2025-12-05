@@ -15,8 +15,8 @@ cd "$PROJECT_ROOT"
 ########################################
 
 # Paths (can be overridden by environment variables).
-SKU_ROOT="${SKU_ROOT:-/data/patrick/10623GenAI/final_proj/data/DeepFashion2_SKU}"
-CKPT_OUT="${CKPT_OUT:-/data/patrick/10623GenAI/final_proj/checkpoints/baseline2_clip_sku_frozen_bs64/clip_sku_frozen_baseline_final.pt}"
+SKU_ROOT=${SKU_ROOT:-"/home/soinew/genAIdata/SKU"}
+CKPT_OUT=${CKPT_OUT:-"/home/soinew/Rank-Supervised_SKU_Fingerprints_for_Low-Latency_Generative_Visual_Search/data/modelforVLA.pt"}
 
 echo "PROJECT_ROOT = ${PROJECT_ROOT}"
 echo "SKU_ROOT     = ${SKU_ROOT}"

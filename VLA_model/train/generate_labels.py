@@ -6,11 +6,11 @@ from Image_processing.image_feature import compute_quality_features
 
 def generate_labels(base_dataset, model_P, clip_model, preprocess, device="cuda"):
     samples = []
-
+    
     for img, meta in base_dataset:
         # extract CLIP features (raw input)
         with torch.no_grad():
-            c = preprocess(img).unsqueeze(0).to(device)
+            c = preprocess(img).unsqueeze(0)
             v = clip_model.encode_image(c)
             v = v / v.norm(dim=-1, keepdim=True)
             visual_np = v.cpu().numpy()[0]
@@ -22,7 +22,7 @@ def generate_labels(base_dataset, model_P, clip_model, preprocess, device="cuda"
         rewards = []
         for action in VLAAction:
             processed = ACTION_FUNCS[action](img)
-            score = model_P(processed, meta)  
+            score = model_P(processed)  
             rewards.append(score)
 
         best_action = int(np.argmax(rewards))

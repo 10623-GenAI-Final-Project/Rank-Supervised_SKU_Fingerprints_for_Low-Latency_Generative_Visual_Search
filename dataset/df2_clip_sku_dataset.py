@@ -93,13 +93,17 @@ class DeepFashion2ImageTextSkuTrainDataset(Dataset):
     def __getitem__(self, idx: int):
         rec = self.samples[idx]
         img_path = rec["image_path"]
-        text = rec["text"]
+        text = rec.get("text", "")  # Use empty string if text is missing
         sku_idx = rec["sku_idx"]
         domain = rec["domain"]
 
         img = Image.open(img_path).convert("RGB")
         img_tensor = self.preprocess(img)
 
+        # Use empty string or placeholder if text is missing/empty
+        if not text or text.strip() == "":
+            text = "image"  # Placeholder text that tokenizes to valid tokens
+        
         tokens = self.tokenizer(text)
         if tokens.ndim == 2:
             tokens = tokens[0]

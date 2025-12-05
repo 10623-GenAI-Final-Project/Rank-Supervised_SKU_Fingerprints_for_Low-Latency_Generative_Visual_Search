@@ -25,6 +25,14 @@ def parse_args():
         help="open_clip pretrained tag.",
     
     )
+    parser.add_argument(
+        "--input_path",
+        type=str,
+        default="/home/soinew/genAIdata/VLA/labels.pkl",
+        help="open_clip pretrained tag.",
+    )
+
+    return parser.parse_args()
 
 def main():    
     args = parse_args()
@@ -34,9 +42,8 @@ def main():
     visual_dim = clip_model.visual.output_dim
     quality_dim = 10
     num_actions = len(VLAAction)
-
-    samples = pickle.load(open("labels.pkl", "rb"))
-
+    load_dir = args.input_path
+    samples = pickle.load(open(load_dir, "rb"))
     model = train_policy(samples, visual_dim, quality_dim, num_actions)
 
     torch.save(model.state_dict(), "vla_policy.pt")
