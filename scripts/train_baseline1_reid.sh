@@ -8,7 +8,7 @@ echo "Using GPU: ${CUDA_VISIBLE_DEVICES}"
 
 JSONL_ROOT=${JSONL_ROOT:-"./data"}
 SKU_ROOT=${SKU_ROOT:-"/data/patrick/10623GenAI/final_proj/data/DeepFashion2_SKU"}
-OUT_DIR=${OUT_DIR:-"./outputs/baseline1_reid"}
+OUT_DIR=${OUT_DIR:-"/data/patrick/10623GenAI/final_proj/checkpoints/baseline1_reid"}
 
 mkdir -p "${OUT_DIR}"
 

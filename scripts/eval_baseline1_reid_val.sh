@@ -8,11 +8,11 @@ echo "Using GPU: ${CUDA_VISIBLE_DEVICES}"
 
 JSONL_ROOT=${JSONL_ROOT:-"./data"}
 SKU_ROOT=${SKU_ROOT:-"/data/patrick/10623GenAI/final_proj/data/DeepFashion2_SKU"}
-CKPT=${CKPT:-"outputs/baseline1_reid/baseline1_reid_epoch40.pt"}
+CKPT=${CKPT:-"/data/patrick/10623GenAI/final_proj/checkpoints/baseline1_reid/baseline1_reid_epoch40.pt"}
 
 python -m eval.eval_reid_df2 \
   --jsonl_root "${JSONL_ROOT}" \
   --sku_root "${SKU_ROOT}" \
   --split "validation" \
   --checkpoint "${CKPT}" \
-  --batch_size 128
+  --batch_size 64
