@@ -7,6 +7,7 @@ from PIL import Image
 import torch
 import sys
 import os
+from functools import partial
 # Add project root to Python path
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
@@ -161,17 +162,17 @@ def predict_sku(image, model: ClipSkuBaseline, preprocess, device: str, top_k: i
     
     return predictions
 
-def score(image):
+def score(image,model,idx2sku,preprocess):
     args = parse_args()
     device = torch.device(args.device)
     
     # Load model
-    model, idx2sku, preprocess = load_model(
-        args.checkpoint,
-        args.clip_model,
-        args.clip_pretrained,
-        device
-    )
+    # model, idx2sku, preprocess = load_model(
+    #     args.checkpoint,
+    #     args.clip_model,
+    #     args.clip_pretrained,
+    #     device
+    # )
     
     # Predict SKU
     print(f"\nPredicting SKU for image: {image}")
@@ -217,15 +218,25 @@ class ImageFolderDataset(Dataset):
 
 def main():
     args = parse_args()
+    device = torch.device(args.device)
     clip_model, _, preprocess = open_clip.create_model_and_transforms(
         args.clip_model, pretrained=args.clip_pretrained
     )
+    model, idx2sku, preprocess = load_model(
+        args.checkpoint,
+        args.clip_model,
+        args.clip_pretrained,
+        device
+    )
+    
     dataset = ImageFolderDataset(args.image_load)
     def single_sample_collate(batch):
     # batch is a list with one element when batch_size=1
         return batch[0]
     loader = DataLoader(dataset, batch_size=1, shuffle=False,collate_fn=single_sample_collate,)
-    samples = generate_labels(loader, score, clip_model, preprocess)
+    # Create a partial function that binds model, idx2sku, and preprocess
+    score_fn = partial(score, model=model, idx2sku=idx2sku, preprocess=preprocess)
+    samples = generate_labels(loader, score_fn, clip_model, preprocess)
     print(len(samples))
     save_dir = args.output_path
     with open(save_dir, "wb") as f:

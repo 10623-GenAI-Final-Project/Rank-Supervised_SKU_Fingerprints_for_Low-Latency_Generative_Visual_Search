@@ -9,6 +9,7 @@ def generate_labels(base_dataset, model_P, clip_model, preprocess, device="cuda"
     
     for img, meta in base_dataset:
         # extract CLIP features (raw input)
+        print('-'*20+"\n"+"Image No.: " + str(len(samples)))
         with torch.no_grad():
             c = preprocess(img).unsqueeze(0)
             v = clip_model.encode_image(c)
@@ -32,5 +33,6 @@ def generate_labels(base_dataset, model_P, clip_model, preprocess, device="cuda"
             "quality": q_np.astype(np.float32),
             "label": best_action,
         })
+        
 
     return samples

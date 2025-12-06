@@ -29,13 +29,28 @@ def parse_args():
         "--input_path",
         type=str,
         default="/home/soinew/genAIdata/VLA/labels.pkl",
-        help="open_clip pretrained tag.",
+        help="Path to input labels pickle file.",
+    )
+    parser.add_argument(
+        "--num_epochs",
+        type=int,
+        default=10000,
+        help="Number of training epochs (default: 10000).",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="cuda" if torch.cuda.is_available() else "cpu",
+        help="Device to run training on (default: cuda if available, else cpu).",
     )
 
     return parser.parse_args()
 
 def main():    
     args = parse_args()
+    device = torch.device(args.device)
+    print(f"Using device: {device}")
+    
     clip_model, _, preprocess = open_clip.create_model_and_transforms(
         args.clip_model, pretrained=args.clip_pretrained
     )
@@ -43,11 +58,24 @@ def main():
     quality_dim = 10
     num_actions = len(VLAAction)
     load_dir = args.input_path
+    
+    print(f"Loading training data from {load_dir}...")
     samples = pickle.load(open(load_dir, "rb"))
-    model = train_policy(samples, visual_dim, quality_dim, num_actions)
+    print(f"Loaded {len(samples)} training samples")
+    
+    print(f"\nStarting training for {args.num_epochs} epochs...")
+    model = train_policy(
+        samples, 
+        visual_dim, 
+        quality_dim, 
+        num_actions, 
+        device=str(device),
+        num_epochs=args.num_epochs
+    )
 
-    torch.save(model.state_dict(), "vla_policy.pt")
-    print("Saved model to vla_policy.pt")
+    output_path = "vla_policy.pt"
+    torch.save(model.state_dict(), output_path)
+    print(f"\nSaved model to {output_path}")
 
 if __name__ == "__main__":
     main()
