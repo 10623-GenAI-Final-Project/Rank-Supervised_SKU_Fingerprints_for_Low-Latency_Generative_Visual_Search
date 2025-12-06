@@ -273,13 +273,16 @@ def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
 def setup_diffusion(
     device: torch.device,
     model_name: str = "runwayml/stable-diffusion-v1-5",
+    lora_weights: Path | None = None,  # Add this parameter
 ) -> StableDiffusionImg2ImgPipeline:
-    """
-    Create an image-to-image diffusion pipeline.
-
-    NOTE: Here we use SD1.5 img2img (U-Net-based). If you have DiT-based img2img checkpoint, you can change the model_name directly.
-    """
     pipe = StableDiffusionImg2ImgPipeline.from_pretrained(model_name)
+    
+    # Load LoRA weights
+    if lora_weights is not None:
+        print(f"[DiT] Loading LoRA weights from {lora_weights}")
+        pipe.unet.load_attn_procs(lora_weights)
+        print(f"[DiT] ✓ LoRA weights loaded")
+    
     pipe = pipe.to(device)
     pipe.set_progress_bar_config(disable=True)
     pipe.enable_attention_slicing("max")
@@ -843,6 +846,12 @@ def parse_args():
         type=int,
         default=42,
         help="Random seed for SKU shuffling.",
+    )
+    parser.add_argument(
+    "--lora_weights",
+    type=Path,
+    default=None,
+    help="Path to fine-tuned LoRA weights (.pt file)",
     )
 
     return parser.parse_args()

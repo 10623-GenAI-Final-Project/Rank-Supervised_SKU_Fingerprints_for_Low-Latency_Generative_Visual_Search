@@ -14,8 +14,8 @@ export SKU_ROOT=/path/to/DeepFashion2_SKU
 export HF_HOME=/path/to/hf_cache  # optional
 
 # Install dependencies (if not already installed)
-pip install diffusers==0.29.0 transformers==4.40.0 accelerate==0.30.0
-pip install wandb tqdm Pillow
+pip install -r requirements.txt
+
 ```
 
 ### 2. Run Training Pipeline
@@ -38,10 +38,10 @@ This script will:
 | Config | Images | Time | Use Case |
 |--------|--------|------|----------|
 | Quick test | 10,000 | 1-2h | Fast validation |
-| **Recommended** ⭐ | 20,000 | 4-6h | Best balance |
+| **Recommended**  | 20,000 | 4-6h | Best balance |
 | Full training | 50,000 | 10-12h | Maximum quality |
 
-### RTX 5090 32GB Settings
+### Exp: RTX 5090 32GB Settings
 
 ```bash
 python -m dit.train_dit_lora_df2 \
@@ -77,75 +77,6 @@ checkpoints/dit_lora_20000/
 
 ---
 
-## Using Fine-tuned Model
-
-### Update Generation Script
-
-Modify `gen/gen_dit_aug_df2.py`:
-
-```python
-def setup_diffusion(
-    device: torch.device,
-    model_name: str = "runwayml/stable-diffusion-v1-5",
-    lora_weights: Path | None = None,  # Add this parameter
-) -> StableDiffusionImg2ImgPipeline:
-    pipe = StableDiffusionImg2ImgPipeline.from_pretrained(model_name)
-    
-    # Load LoRA weights
-    if lora_weights is not None:
-        print(f"[DiT] Loading LoRA weights from {lora_weights}")
-        pipe.unet.load_attn_procs(lora_weights)
-        print(f"[DiT] ✓ LoRA weights loaded")
-    
-    pipe = pipe.to(device)
-    pipe.set_progress_bar_config(disable=True)
-    pipe.enable_attention_slicing("max")
-    return pipe
-```
-
-Add argument in `parse_args()`:
-
-```python
-parser.add_argument(
-    "--lora_weights",
-    type=Path,
-    default=None,
-    help="Path to fine-tuned LoRA weights (.pt file)",
-)
-```
-
-### Generate Augmented Data
-
-```bash
-python -m gen.gen_dit_aug_df2 \
-  --sku_root "$SKU_ROOT" \
-  --split train \
-  --num_views 4 \
-  --sd_model runwayml/stable-diffusion-v1-5 \
-  --lora_weights checkpoints/dit_lora_20000/lora_best.pt \
-  --out_suffix dit_finetuned_aug
-```
-
----
-
-## Monitoring with Wandb
-
-Training metrics are automatically logged to Wandb:
-- Loss curve (should decrease steadily)
-- Learning rate (cosine schedule)
-- GPU memory usage (~18GB)
-
-View at: https://wandb.ai/your-username/dit-finetune-df2
-
-```bash
-# First time setup
-wandb login
-
-# Or disable wandb
-python -m dit.train_dit_lora_df2 --no_wandb
-```
-
----
 
 ## Troubleshooting
 
