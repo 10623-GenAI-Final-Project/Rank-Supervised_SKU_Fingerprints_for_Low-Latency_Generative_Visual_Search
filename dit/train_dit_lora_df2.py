@@ -230,34 +230,34 @@ def train_lora(
         for step, (images, prompts) in enumerate(progress_bar):
             images = images.to(device)
             
-            # Encode text
-            text_inputs = tokenizer(
-                prompts,
-                padding="max_length",
-                max_length=tokenizer.model_max_length,
-                truncation=True,
-                return_tensors="pt",
-            )
-            with torch.no_grad():
-                text_embeddings = text_encoder(text_inputs.input_ids.to(device))[0]
-            
-            # Encode images to latent space
-            with torch.no_grad():
-                latents = vae.encode(images).latent_dist.sample()
-                latents = latents * vae.config.scaling_factor
-            
-            # Sample noise
-            noise = torch.randn_like(latents)
-            timesteps = torch.randint(
-                0, noise_scheduler.config.num_train_timesteps,
-                (latents.shape[0],), device=device
-            ).long()
-            
-            # Add noise to latents
-            noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-            
-            # Forward pass with autocast for numerical stability
+            # Use autocast for all forward passes
             with torch.cuda.amp.autocast():
+                # Encode text
+                text_inputs = tokenizer(
+                    prompts,
+                    padding="max_length",
+                    max_length=tokenizer.model_max_length,
+                    truncation=True,
+                    return_tensors="pt",
+                )
+                with torch.no_grad():
+                    text_embeddings = text_encoder(text_inputs.input_ids.to(device))[0]
+                
+                # Encode images to latent space
+                with torch.no_grad():
+                    latents = vae.encode(images).latent_dist.sample()
+                    latents = latents * vae.config.scaling_factor
+                
+                # Sample noise
+                noise = torch.randn_like(latents)
+                timesteps = torch.randint(
+                    0, noise_scheduler.config.num_train_timesteps,
+                    (latents.shape[0],), device=device
+                ).long()
+                
+                # Add noise to latents
+                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+                
                 # Predict noise
                 model_pred = unet(noisy_latents, timesteps, text_embeddings).sample
                 
