@@ -7,7 +7,6 @@ This script trains a lightweight LoRA adapter for fashion product image generati
 
 import torch
 from diffusers import StableDiffusionPipeline, DDPMScheduler
-from diffusers.loaders import AttnProcsLayers
 from diffusers.models.attention_processor import LoRAAttnProcessor
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
@@ -135,33 +134,16 @@ def train_lora(
     vae.requires_grad_(False)
     text_encoder.requires_grad_(False)
     
-    # Add LoRA layers to UNet
+    # Add LoRA layers to UNet (diffusers 0.35+ API)
     lora_attn_procs = {}
     for name in unet.attn_processors.keys():
-        cross_attention_dim = None if name.endswith("attn1.processor") else unet.config.cross_attention_dim
-        if name.startswith("mid_block"):
-            hidden_size = unet.config.block_out_channels[-1]
-        elif name.startswith("up_blocks"):
-            block_id = int(name[len("up_blocks.")])
-            hidden_size = list(reversed(unet.config.block_out_channels))[block_id]
-        elif name.startswith("down_blocks"):
-            block_id = int(name[len("down_blocks.")])
-            hidden_size = unet.config.block_out_channels[block_id]
-        
-        lora_attn_procs[name] = LoRAAttnProcessor(
-            hidden_size=hidden_size,
-            cross_attention_dim=cross_attention_dim,
-            rank=rank,
-        )
+        # New API: LoRAAttnProcessor only takes rank parameter
+        lora_attn_procs[name] = LoRAAttnProcessor(rank=rank)
     
     unet.set_attn_processor(lora_attn_procs)
     
-    # Only train LoRA parameters
-    lora_layers = AttnProcsLayers(unet.attn_processors)
-    lora_layers.to(device, dtype=torch.float16)
-    
     # Count trainable parameters
-    trainable_params = sum(p.numel() for p in lora_layers.parameters() if p.requires_grad)
+    trainable_params = sum(p.numel() for p in unet.parameters() if p.requires_grad)
     print(f"LoRA parameters: {trainable_params:,}")
     
     # Move models to GPU
@@ -197,9 +179,10 @@ def train_lora(
         drop_last=True,
     )
     
-    # Optimizer
+    # Optimizer - only LoRA parameters are trainable
+    lora_params = [p for p in unet.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(
-        lora_layers.parameters(),
+        lora_params,
         lr=learning_rate,
         betas=(0.9, 0.999),
         weight_decay=0.01,
@@ -271,7 +254,7 @@ def train_lora(
             # Optimization step
             if (step + 1) % gradient_accumulation_steps == 0:
                 # Gradient clipping
-                torch.nn.utils.clip_grad_norm_(lora_layers.parameters(), max_grad_norm)
+                torch.nn.utils.clip_grad_norm_(lora_params, max_grad_norm)
                 
                 optimizer.step()
                 scheduler.step()
@@ -300,7 +283,9 @@ def train_lora(
                 # Save checkpoint
                 if global_step % save_every == 0:
                     save_path = output_dir / f"lora_step_{global_step}.pt"
-                    torch.save(lora_layers.state_dict(), save_path)
+                    # Save LoRA weights (diffusers 0.35+)
+                    lora_state_dict = {k: v for k, v in unet.state_dict().items() if "lora" in k}
+                    torch.save(lora_state_dict, save_path)
                     print(f"\nSaved: {save_path.name}")
                     
                     if use_wandb:
@@ -312,7 +297,8 @@ def train_lora(
         
         # Save epoch checkpoint
         save_path = output_dir / f"lora_epoch_{epoch+1}.pt"
-        torch.save(lora_layers.state_dict(), save_path)
+        lora_state_dict = {k: v for k, v in unet.state_dict().items() if "lora" in k}
+        torch.save(lora_state_dict, save_path)
         
         if use_wandb:
             wandb.log({
@@ -325,7 +311,8 @@ def train_lora(
         if epoch_avg_loss < best_loss:
             best_loss = epoch_avg_loss
             best_path = output_dir / "lora_best.pt"
-            torch.save(lora_layers.state_dict(), best_path)
+            lora_state_dict = {k: v for k, v in unet.state_dict().items() if "lora" in k}
+            torch.save(lora_state_dict, best_path)
             print(f"  ✓ Best model updated (loss: {best_loss:.4f})")
             
             if use_wandb:
@@ -333,7 +320,8 @@ def train_lora(
     
     # Save final model
     final_path = output_dir / "lora_final.pt"
-    torch.save(lora_layers.state_dict(), final_path)
+    lora_state_dict = {k: v for k, v in unet.state_dict().items() if "lora" in k}
+    torch.save(lora_state_dict, final_path)
     
     print(f"\n✓ Training completed!")
     print(f"  Best: {output_dir / 'lora_best.pt'} (loss: {best_loss:.4f})")
