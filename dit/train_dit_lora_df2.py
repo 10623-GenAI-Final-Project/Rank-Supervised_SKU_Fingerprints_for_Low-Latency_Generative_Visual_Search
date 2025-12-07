@@ -208,7 +208,8 @@ def train_lora(
         if current_step < warmup_steps:
             return float(current_step) / float(max(1, warmup_steps))
         progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
-        return max(0.1, 0.5 * (1.0 + torch.cos(torch.pi * progress)))
+        import math
+        return max(0.1, 0.5 * (1.0 + math.cos(math.pi * progress)))
     
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
