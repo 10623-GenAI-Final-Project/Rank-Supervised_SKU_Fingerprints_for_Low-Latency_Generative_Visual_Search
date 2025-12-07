@@ -154,10 +154,10 @@ def train_lora(
     trainable_params = sum(p.numel() for p in unet.parameters() if p.requires_grad)
     print(f"LoRA parameters: {trainable_params:,}")
     
-    # Move models to GPU
-    vae.to(device, dtype=torch.float16)
-    text_encoder.to(device, dtype=torch.float16)
-    unet.to(device, dtype=torch.float16)
+    # Move models to GPU (keep FP32 for training with AMP)
+    vae.to(device)
+    text_encoder.to(device)
+    unet.to(device)
     
     # Set eval mode for frozen modules
     vae.eval()
@@ -228,7 +228,7 @@ def train_lora(
         optimizer.zero_grad()
         
         for step, (images, prompts) in enumerate(progress_bar):
-            images = images.to(device, dtype=torch.float16)
+            images = images.to(device)
             
             # Encode text
             text_inputs = tokenizer(
