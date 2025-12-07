@@ -273,15 +273,36 @@ def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
 def setup_diffusion(
     device: torch.device,
     model_name: str = "runwayml/stable-diffusion-v1-5",
-    lora_weights: Path | None = None,  # Add this parameter
+    lora_weights: Path | None = None,
 ) -> StableDiffusionImg2ImgPipeline:
+    """
+    Create an image-to-image diffusion pipeline.
+    
+    Args:
+        lora_weights: Path to LoRA weights. Supports:
+            - Directory with adapter_model.safetensors (peft format)
+            - .pt file (legacy format)
+    """
     pipe = StableDiffusionImg2ImgPipeline.from_pretrained(model_name)
     
-    # Load LoRA weights
+    # Load LoRA weights (support both peft and legacy formats)
     if lora_weights is not None:
-        print(f"[DiT] Loading LoRA weights from {lora_weights}")
-        pipe.unet.load_attn_procs(lora_weights)
-        print(f"[DiT] ✓ LoRA weights loaded")
+        lora_path = Path(lora_weights)
+        print(f"[DiT] Loading LoRA weights from {lora_path}")
+        
+        # Check if it's peft format (directory with adapter_model.safetensors)
+        if lora_path.is_dir() and (lora_path / "adapter_model.safetensors").exists():
+            print(f"[DiT] Detected peft format LoRA")
+            from peft import PeftModel
+            pipe.unet = PeftModel.from_pretrained(pipe.unet, str(lora_path))
+            print(f"[DiT] ✓ Peft LoRA loaded")
+        # Legacy .pt format
+        elif lora_path.suffix == ".pt":
+            print(f"[DiT] Detected legacy .pt format LoRA")
+            pipe.unet.load_attn_procs(str(lora_path))
+            print(f"[DiT] ✓ Legacy LoRA loaded")
+        else:
+            print(f"[DiT] WARNING: Unknown LoRA format at {lora_path}, skipping...")
     
     pipe = pipe.to(device)
     pipe.set_progress_bar_config(disable=True)
@@ -848,10 +869,14 @@ def parse_args():
         help="Random seed for SKU shuffling.",
     )
     parser.add_argument(
-    "--lora_weights",
-    type=Path,
-    default=None,
-    help="Path to fine-tuned LoRA weights (.pt file)",
+        "--lora_weights",
+        type=Path,
+        default=None,
+        help=(
+            "Path to fine-tuned LoRA weights. Supports: "
+            "(1) Directory with adapter_model.safetensors (peft format), "
+            "(2) .pt file (legacy format)."
+        ),
     )
 
     return parser.parse_args()
@@ -872,7 +897,11 @@ def main():
     sku2texts = build_sku_catalog_text_map(orig_jsonl_path)
 
     # 2) Setup diffusion & CLIP
-    pipe = setup_diffusion(device=device, model_name=args.sd_model)
+    pipe = setup_diffusion(
+        device=device, 
+        model_name=args.sd_model,
+        lora_weights=args.lora_weights,
+    )
     clip_model, clip_preprocess = setup_clip(
         device=device,
         clip_model_name=args.clip_model,
