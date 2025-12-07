@@ -197,14 +197,24 @@ def train_lora(
         eps=1e-8,
     )
     
-    # Learning rate scheduler (cosine)
-    total_steps = len(dataloader) * num_epochs // gradient_accumulation_steps
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=total_steps, eta_min=learning_rate * 0.1
-    )
+    # Gradient scaler for mixed precision training
+    scaler = torch.cuda.amp.GradScaler()
+    
+    # Learning rate scheduler (cosine with warmup)
+    total_steps = (len(dataloader) // gradient_accumulation_steps) * num_epochs
+    warmup_steps = min(100, total_steps // 10)
+    
+    def lr_lambda(current_step):
+        if current_step < warmup_steps:
+            return float(current_step) / float(max(1, warmup_steps))
+        progress = float(current_step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        return max(0.1, 0.5 * (1.0 + torch.cos(torch.pi * progress)))
+    
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
     # Training info
-    print(f"\nTraining: {len(dataset):,} images, {num_epochs} epochs, BS={batch_size}x{gradient_accumulation_steps}, LR={learning_rate}\n")
+    print(f"\nTraining: {len(dataset):,} images, {num_epochs} epochs, BS={batch_size}x{gradient_accumulation_steps}, LR={learning_rate}")
+    print(f"Total steps: {total_steps}, Warmup steps: {warmup_steps}\n")
     
     # Training loop
     global_step = 0
@@ -245,33 +255,56 @@ def train_lora(
             # Add noise to latents
             noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
             
-            # Predict noise
-            model_pred = unet(noisy_latents, timesteps, text_embeddings).sample
+            # Forward pass with autocast for numerical stability
+            with torch.cuda.amp.autocast():
+                # Predict noise
+                model_pred = unet(noisy_latents, timesteps, text_embeddings).sample
+                
+                # Compute loss
+                loss = torch.nn.functional.mse_loss(
+                    model_pred.float(), noise.float(), reduction="mean"
+                )
             
-            # Compute loss
-            loss = torch.nn.functional.mse_loss(
-                model_pred.float(), noise.float(), reduction="mean"
-            )
+            # Scale loss for gradient accumulation
             loss = loss / gradient_accumulation_steps
             
-            # Backward pass
-            loss.backward()
+            # Backward pass with gradient scaling
+            scaler.scale(loss).backward()
             
-            epoch_losses.append(loss.item() * gradient_accumulation_steps)
+            # Check for NaN
+            loss_value = loss.item() * gradient_accumulation_steps
+            if torch.isnan(loss) or torch.isinf(loss):
+                print(f"\n⚠️  Warning: NaN/Inf loss detected at step {step}, skipping...")
+                optimizer.zero_grad()
+                continue
+            
+            epoch_losses.append(loss_value)
             
             # Optimization step
             if (step + 1) % gradient_accumulation_steps == 0:
-                # Gradient clipping
-                torch.nn.utils.clip_grad_norm_(lora_params, max_grad_norm)
+                # Unscale gradients for clipping
+                scaler.unscale_(optimizer)
                 
-                optimizer.step()
+                # Gradient clipping
+                grad_norm = torch.nn.utils.clip_grad_norm_(lora_params, max_grad_norm)
+                
+                # Check for NaN gradients
+                if torch.isnan(grad_norm) or torch.isinf(grad_norm):
+                    print(f"\n⚠️  Warning: NaN/Inf gradient detected, skipping step...")
+                    optimizer.zero_grad()
+                    scaler.update()
+                    continue
+                
+                # Optimizer step with gradient scaling
+                scaler.step(optimizer)
+                scaler.update()
                 scheduler.step()
                 optimizer.zero_grad()
                 
                 global_step += 1
                 
                 # Update progress bar
-                current_loss = loss.item() * gradient_accumulation_steps
+                current_loss = loss_value
                 current_lr = scheduler.get_last_lr()[0]
                 progress_bar.set_postfix({
                     "loss": f"{current_loss:.4f}",
@@ -286,6 +319,7 @@ def train_lora(
                         "train/learning_rate": current_lr,
                         "train/epoch": epoch + (step / len(dataloader)),
                         "train/step": global_step,
+                        "train/grad_norm": grad_norm.item() if not torch.isnan(grad_norm) else 0,
                     }, step=global_step)
                 
                 # Save checkpoint
