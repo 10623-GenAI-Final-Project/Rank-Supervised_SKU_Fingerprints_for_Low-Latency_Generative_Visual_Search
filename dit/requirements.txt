@@ -2,14 +2,15 @@
 # pip install -r dit/requirements.txt
 
 # Core dependencies
-torch>=2.1.0
-torchvision>=0.16.0
+torch==2.1.0
+torchvision==0.16.0
 
 # Stable Diffusion & Diffusers
-diffusers>=0.29.0
-transformers>=4.40.0
-accelerate>=0.30.0
-safetensors>=0.4.0
+diffusers==0.25.0
+transformers==4.36.0
+huggingface_hub==0.19.4
+accelerate==0.25.0
+safetensors>=0.4.1
 
 # Image processing
 Pillow>=10.0.0
