@@ -72,7 +72,7 @@ def parse_args():
     parser.add_argument(
         "--sku_checkpoint",
         type=str,
-        default="/home/soinew/Rank-Supervised_SKU_Fingerprints_for_Low-Latency_Generative_Visual_Search/data/modelforVLA.pt",
+        default="/home/soinew/Rank-Supervised_SKU_Fingerprints_for_Low-Latency_Generative_Visual_Search/VLA_model/data/modelforVLA.pt",
         help="Path to ClipSkuBaseline checkpoint for SKU scoring (default: data/modelforVLA.pt).",
     )
     parser.add_argument(

@@ -34,8 +34,8 @@ def parse_args():
     parser.add_argument(
         "--num_epochs",
         type=int,
-        default=10000,
-        help="Number of training epochs (default: 10000).",
+        default=3000,
+        help="Number of training epochs (default: 3000).",
     )
     parser.add_argument(
         "--device",

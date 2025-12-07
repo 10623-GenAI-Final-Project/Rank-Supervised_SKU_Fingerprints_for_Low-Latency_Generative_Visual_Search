@@ -44,7 +44,7 @@ def parse_args():
     parser.add_argument(
         "--checkpoint",
         type=Path,
-        default= "data/modelforVLA.pt",
+        default= "/home/soinew/Rank-Supervised_SKU_Fingerprints_for_Low-Latency_Generative_Visual_Search/VLA_model/data/modelforVLA.pt",
         help="Path to trained model checkpoint (.pt file).",
     )
 
