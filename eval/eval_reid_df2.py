@@ -80,6 +80,13 @@ def parse_args():
         default=[1, 5, 10],
         help="List of K values for Recall@K",
     )
+    parser.add_argument(
+        "--eval_cpu_latency",
+        action="store_true",
+        help=(
+            "If set, latency will be evaluated on cpu. "
+        ),
+    )
 
     return parser.parse_args()
 
@@ -149,7 +156,10 @@ def compute_metrics(
         q = query_embs[i : i + 1]  # (1, D)
         label = int(query_labels[i].item())
 
+        if device.type == "cuda":
+            torch.cuda.synchronize()
         start = time.perf_counter()
+
         # cosine similarity since embeddings are L2-normalized
         sims = torch.matmul(gallery_embs, q.t()).squeeze(1)  # (Ng,)
 
@@ -169,6 +179,8 @@ def compute_metrics(
         # Rank: 1 + number of SKUs with strictly higher score
         rank = int((per_sku_scores > score_gt).sum().item() + 1)
 
+        if device.type == "cuda":
+            torch.cuda.synchronize()
         end = time.perf_counter()
         latencies_ms.append((end - start) * 1000.0)
 
@@ -245,8 +257,17 @@ def main():
         model, query_dataset, args.batch_size, device
     )
 
-    gallery_embs = gallery_embs.to(device)
-    gallery_labels = gallery_labels.to(device)
+    if args.eval_cpu_latency:
+        gallery_embs = gallery_embs.to('cpu')
+        gallery_labels = gallery_labels.to('cpu')
+        query_embs = query_embs.to('cpu')
+        query_labels = query_labels.to('cpu')
+    else:
+        gallery_embs = gallery_embs.to('cuda')
+        gallery_labels = gallery_labels.to('cuda')
+        query_embs = query_embs.to('cuda')
+        query_labels = query_labels.to('cuda')
+
 
     metrics = compute_metrics(
         gallery_embs,
@@ -259,10 +280,7 @@ def main():
 
     print("=== Evaluation results ===")
     for k, v in metrics.items():
-        if "latency" in k:
-            print(f"{k}: {v:.2f}")
-        else:
-            print(f"{k}: {v:.4f}")
+        print(f"  {k}: {v:.4f}")
 
 
 if __name__ == "__main__":

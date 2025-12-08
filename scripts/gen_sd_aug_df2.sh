@@ -17,27 +17,26 @@ echo "PROJECT_ROOT = ${PROJECT_ROOT}"
 echo "SKU_ROOT     = ${SKU_ROOT}"
 echo
 
-# ---------- Pretrained DiT augmentation (multi-view only) ----------
+# ---------- Pretrained DiT/SD augmentation (multi-view only) ----------
 python -m gen.gen_sd_aug_df2 \
   --sku_root "$SKU_ROOT" \
   --split train \
   --num_views 4 \
   --num_counterfactual 0 \
-  --shuffle_skus \
-  --seed 16831 \
-  --max_skus 3000 \
-  --out_suffix dit_clipsku_sub3k_nv4 \
-  --mv_subdir catalog_dit_light_sub3k_nv4 \
-  --mv_suffix aug \
+  --out_suffix sd_pretrained_aug \
   --sd_model runwayml/stable-diffusion-v1-5 \
   --clip_model ViT-B-16 \
   --clip_pretrained laion2b_s34b_b88k \
-  --clip_sku_ckpt /data/patrick/10623GenAI/final_proj/checkpoints/baseline5_ft_bestshot_bs64_text0p1_unlock2_ep6_lr3e-4/clip_sku_baseline_final_best.pt \
-  --device cuda \
-  --use_dit_multiview \
-  --dit_model PixArt-alpha/PixArt-XL-2-512x512 \
-  --cf_backend dit \
-  --mv_sim_thresh 0.55 \
-  --mv_color_max_diff 0.25 \
-  --cf_sim_min 0.45 \
-  --cf_sim_max 0.75
+  --device cuda  
+  #--clip_sku_ckpt /data/patrick/10623GenAI/final_proj/checkpoints/baseline3_clip_sku_bs64/clip_sku_baseline_final.pt \
+
+# if you want to fine-tuned DiT, generating finetuned version, run with：
+# python -m gen.gen_dit_aug_df2 \
+#   --sku_root "$SKU_ROOT" \
+#   --split train \
+#   --num_views 2 \
+#   --num_counterfactual 0 \
+#   --out_suffix dit_finetuned_aug \
+#   --sd_model /path/to/your_finetuned_dit_or_sd \
+#   --device cuda
+

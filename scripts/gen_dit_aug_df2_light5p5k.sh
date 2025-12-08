@@ -25,9 +25,9 @@ python -m gen.gen_sd_aug_df2 \
   --num_counterfactual 0 \
   --shuffle_skus \
   --seed 16831 \
-  --max_skus 3000 \
-  --out_suffix dit_clipsku_sub3k_nv4 \
-  --mv_subdir catalog_dit_light_sub3k_nv4 \
+  --max_skus 5500 \
+  --out_suffix dit_clipsku_sub5p5k_nv4 \
+  --mv_subdir catalog_dit_light_sub5p5k_nv4 \
   --mv_suffix aug \
   --sd_model runwayml/stable-diffusion-v1-5 \
   --clip_model ViT-B-16 \
