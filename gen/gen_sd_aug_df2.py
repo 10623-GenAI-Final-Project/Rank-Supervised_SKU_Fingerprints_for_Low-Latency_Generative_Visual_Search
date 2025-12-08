@@ -1,4 +1,4 @@
-# gen/gen_dit_aug_df2.py
+# gen/gen_sd_aug_df2.py
 from __future__ import annotations
 
 import argparse
@@ -13,9 +13,14 @@ from PIL import Image
 import torch
 import torch.nn.functional as F
 import open_clip
-from diffusers import StableDiffusionImg2ImgPipeline
 from models.clip_sku_baseline import ClipSkuBaseline
 from tqdm import tqdm
+from diffusers import (
+    StableDiffusionImg2ImgPipeline,
+    DiffusionPipeline,
+    PixArtAlphaPipeline,
+)
+from train.train_sd_lora_df2 import inject_lora_into_unet
 
 import logging
 logging.getLogger("diffusers").setLevel(logging.ERROR)
@@ -88,8 +93,8 @@ def iter_catalog_entries(
     sku_root: Path,
     split: str,
     max_skus: int | None = None,
-    shuffle=False,
-    seed=42,
+    shuffle: bool = False,
+    seed: int = 42,
 ) -> Iterator[Tuple[str, Dict, Dict, Path]]:
     """
     Yield (sku_id, sku_info, catalog_entry, abs_path) over all ORIGINAL catalog crops.
@@ -269,20 +274,73 @@ def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
 # Diffusion (DiT/SD) helpers
 # ============================================================
 
-
 def setup_diffusion(
     device: torch.device,
     model_name: str = "runwayml/stable-diffusion-v1-5",
+    lora_ckpt: str | None = None,
+    lora_rank: int = 4,
+    lora_alpha: float = 1.0,
 ) -> StableDiffusionImg2ImgPipeline:
     """
-    Create an image-to-image diffusion pipeline.
+    Create an image-to-image diffusion pipeline (SD1.5 img2img).
 
-    NOTE: Here we use SD1.5 img2img (U-Net-based). If you have DiT-based img2img checkpoint, you can change the model_name directly.
+    If lora_ckpt is provided, we:
+      1) inject custom LoRA modules into the UNet (same logic as in train_sd_lora_df2.py)
+      2) load the saved LoRA weights from the checkpoint.
     """
     pipe = StableDiffusionImg2ImgPipeline.from_pretrained(model_name)
-    pipe = pipe.to(device)
     pipe.set_progress_bar_config(disable=True)
     pipe.enable_attention_slicing("max")
+
+    if lora_ckpt is not None:
+        print(f"[INFO] Loading SD LoRA checkpoint from {lora_ckpt}")
+        ckpt = torch.load(lora_ckpt, map_location="cpu")
+
+        ckpt_rank = ckpt.get("lora_rank", lora_rank)
+        ckpt_alpha = ckpt.get("lora_alpha", lora_alpha)
+
+        # 1) create LoRA modules on the current UNet
+        inject_lora_into_unet(
+            pipe.unet,
+            rank=ckpt_rank,
+            alpha=ckpt_alpha,
+        )
+
+        # 2) load LoRA weights
+        lora_state = ckpt["lora_state_dict"]
+        missing, unexpected = pipe.unet.load_state_dict(lora_state, strict=False)
+        if missing:
+            print(f"[LoRA] Missing keys when loading LoRA weights: {len(missing)}")
+        if unexpected:
+            print(f"[LoRA] Unexpected keys when loading LoRA weights: {len(unexpected)}")
+
+    pipe = pipe.to(device)
+    return pipe
+
+def setup_dit_pipeline(
+    device: torch.device,
+    model_name: str = "PixArt-alpha/PixArt-XL-2-512x512",
+):
+    """
+    Setup a DiT-based text-to-image pipeline (e.g., PixArt-alpha).
+    """
+    print(f"[INFO] Using DiT pipeline: {model_name}")
+
+    if "PixArt-alpha" in model_name:
+        # PixArtAlphaPipeline, more stable
+        pipe = PixArtAlphaPipeline.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+        )
+    else:
+        # fallback：DiffusionPipeline pipeline
+        pipe = DiffusionPipeline.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+        )
+
+    pipe.to(device)
+    pipe.set_progress_bar_config(disable=True)
     return pipe
 
 def is_black_image(img: Image.Image, threshold: float = 0.02) -> bool:
@@ -294,6 +352,62 @@ def is_black_image(img: Image.Image, threshold: float = 0.02) -> bool:
     arr = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
     mean_val = float(arr.mean())
     return mean_val < threshold
+
+
+def generate_views(
+    pipe,
+    init_image: Image.Image,
+    prompt: str,
+    num_samples: int,
+    strength_min: float,
+    strength_max: float,
+    guidance_min: float,
+    guidance_max: float,
+    backend: str = "sd",
+) -> List[Image.Image]:
+    """
+    Generic generator with random strength and guidance.
+
+    backend:
+      - "sd": use StableDiffusionImg2ImgPipeline (img2img, uses init_image)
+      - "dit": use a DiT text-to-image DiffusionPipeline (ignores init_image)
+    """
+    results: List[Image.Image] = []
+    backend = backend.lower()
+
+    for _ in range(num_samples):
+        strength = random.uniform(strength_min, strength_max)
+        guidance = random.uniform(guidance_min, guidance_max)
+
+        if backend == "dit":
+            # DiT text-to-image: 不用 init_image
+            out = pipe(
+                prompt=prompt,
+                num_inference_steps=30,
+                guidance_scale=guidance,
+                num_images_per_prompt=1,
+            )
+        elif backend == "sd":
+            # SD img2img
+            out = pipe(
+                prompt=prompt,
+                image=init_image,
+                strength=strength,
+                guidance_scale=guidance,
+                num_inference_steps=30,
+            )
+        else:
+            raise ValueError(f"Unsupported backend for generate_views: {backend}")
+
+        img = out.images[0]
+
+        # Skip NSFW-blocked black images before returning.
+        if is_black_image(img):
+            continue
+
+        results.append(img)
+
+    return results
 
 
 def build_multiview_prompt(
@@ -340,40 +454,6 @@ def build_counterfactual_prompt(
     return prompt, new_color
 
 
-def generate_views(
-    pipe: StableDiffusionImg2ImgPipeline,
-    init_image: Image.Image,
-    prompt: str,
-    num_samples: int,
-    strength_min: float,
-    strength_max: float,
-    guidance_min: float,
-    guidance_max: float,
-) -> List[Image.Image]:
-    """
-    Generic img2img generator with random strength and guidance.
-    """
-    results: List[Image.Image] = []
-    for _ in range(num_samples):
-        strength = random.uniform(strength_min, strength_max)
-        guidance = random.uniform(guidance_min, guidance_max)
-        out = pipe(
-            prompt=prompt,
-            image=init_image,
-            strength=strength,
-            guidance_scale=guidance,
-            num_inference_steps=30,
-        )
-        img = out.images[0]
-
-        # [NEW] Skip NSFW-blocked black images before returning.
-        if is_black_image(img):
-            # Optionally you could log here if you want to debug.
-            continue
-
-        results.append(img)
-    return results
-
 # ============================================================
 # Augmentation logic
 # ============================================================
@@ -413,7 +493,7 @@ def augment_sku_multiview(
     sku_info: Dict,
     entry: Dict,
     crop_abs: Path,
-    pipe: StableDiffusionImg2ImgPipeline,
+    pipe,
     clip_model,
     clip_preprocess,
     device: torch.device,
@@ -425,9 +505,12 @@ def augment_sku_multiview(
     color_max_diff: float,
     mv_subdir: str,
     mv_suffix: str,
+    mv_backend: str,
 ) -> None:
     """
     Multi-view synthesis for a single catalog crop (same SKU id).
+
+    mv_backend: "sd" (SD img2img) or "dit" (DiT text-to-image).
     """
     if num_views <= 0:
         return
@@ -456,6 +539,7 @@ def augment_sku_multiview(
         strength_max=0.4,
         guidance_min=5.0,
         guidance_max=8.0,
+        backend=mv_backend,
     )
 
     texts_for_sku = sku2texts.get(sku_id, [prompt])
@@ -500,7 +584,7 @@ def augment_sku_multiview(
             "occlusion": entry["occlusion"],
             "viewpoint": entry["viewpoint"],
             "dit_aug": True,
-            "dit_mode": "multiview",
+            "dit_mode": f"multiview_{mv_backend}",
         }
         meta["skus"][sku_id]["catalog"].append(new_entry)
 
@@ -532,7 +616,7 @@ def augment_sku_counterfactual(
     sku_info: Dict,
     entry: Dict,
     crop_abs: Path,
-    pipe: StableDiffusionImg2ImgPipeline,
+    pipe,
     clip_model,
     clip_preprocess,
     device: torch.device,
@@ -545,11 +629,13 @@ def augment_sku_counterfactual(
     color_min_diff: float,
     cf_subdir: str,
     cf_suffix: str,
+    cf_backend: str,
 ) -> None:
     """
     Counterfactual negatives: change color while preserving shape.
     We create new SKUs like "<sku_id>_cf1" as separate labels.
 
+    cf_backend: "sd" or "dit".
     Recommended to use this mainly on the train split.
     """
     if num_cf <= 0:
@@ -583,6 +669,7 @@ def augment_sku_counterfactual(
             strength_max=0.7,
             guidance_min=5.0,
             guidance_max=8.0,
+            backend=cf_backend,
         )
 
         # Skip if NSFW filter produced no valid image.
@@ -628,6 +715,8 @@ def augment_sku_counterfactual(
             "query": [],
             "counterfactual_of": sku_id,
             "counterfactual_color": new_color,
+            "dit_aug": True,
+            "dit_mode": f"counterfactual_{cf_backend}",
         }
 
         new_entry = {
@@ -639,7 +728,7 @@ def augment_sku_counterfactual(
             "occlusion": entry["occlusion"],
             "viewpoint": entry["viewpoint"],
             "dit_aug": True,
-            "dit_mode": "counterfactual",
+            "dit_mode": f"counterfactual_{cf_backend}",
         }
         cf_info["catalog"].append(new_entry)
 
@@ -769,6 +858,14 @@ def parse_args():
         default="cf",
         help="Filename suffix for counterfactual images, e.g. 'cf' -> *_cf01.jpg.",
     )
+    parser.add_argument(
+        "--cf_backend",
+        type=str,
+        default="sd",
+        choices=["sd", "dit"],
+        help="Backend for counterfactual generation: 'sd' (img2img) or 'dit' (text-to-image).",
+    )
+
     # Device / model
     parser.add_argument(
         "--device",
@@ -782,6 +879,21 @@ def parse_args():
         default="runwayml/stable-diffusion-v1-5",
         help="Diffusion model name or path for StableDiffusionImg2ImgPipeline.",
     )
+    parser.add_argument(
+        "--use_dit_multiview",
+        action="store_true",
+        help=(
+            "If set, use a DiT-based DiffusionPipeline (text-to-image) for multi-view "
+            "augmentation instead of StableDiffusionImg2ImgPipeline."
+        ),
+    )
+    parser.add_argument(
+        "--dit_model",
+        type=str,
+        default="PixArt-alpha/PixArt-XL-2-512x512",
+        help="DiT text-to-image model name or path (e.g., PixArt-alpha/PixArt-XL-2-512x512).",
+    )
+
     # Output naming
     parser.add_argument(
         "--out_suffix",
@@ -844,6 +956,15 @@ def parse_args():
         default=42,
         help="Random seed for SKU shuffling.",
     )
+    parser.add_argument(
+        "--sd_lora_ckpt",
+        type=str,
+        default=None,
+        help=(
+            "Optional path to SD LoRA checkpoint (.pth) trained by train_sd_lora_df2.py. "
+            "If provided, it will be loaded into the SD img2img UNet."
+        ),
+    )
 
     return parser.parse_args()
 
@@ -863,7 +984,66 @@ def main():
     sku2texts = build_sku_catalog_text_map(orig_jsonl_path)
 
     # 2) Setup diffusion & CLIP
-    pipe = setup_diffusion(device=device, model_name=args.sd_model)
+    # Decide which pipelines are actually needed to avoid loading both SD and DiT
+    need_sd_for_mv = not args.use_dit_multiview          # multiview uses SD when use_dit_multiview == False
+    need_sd_for_cf = (args.cf_backend == "sd" and args.num_counterfactual > 0)
+    need_sd = need_sd_for_mv or need_sd_for_cf
+
+    need_dit_for_mv = args.use_dit_multiview
+    need_dit_for_cf = (args.cf_backend == "dit" and args.num_counterfactual > 0)
+    need_dit = need_dit_for_mv or need_dit_for_cf
+
+    pipe_sd = None
+    if need_sd:
+        pipe_sd = setup_diffusion(
+            device=device,
+            model_name=args.sd_model,
+            lora_ckpt=args.sd_lora_ckpt,
+        )
+
+    pipe_dit = None
+    if need_dit:
+        print(f"[INFO] Using DiT pipeline: {args.dit_model}")
+        pipe_dit = setup_dit_pipeline(device=device, model_name=args.dit_model)
+
+    # multiview backend
+    if args.use_dit_multiview:
+        if pipe_dit is None:
+            raise RuntimeError(
+                "DiT pipeline not initialized but --use_dit_multiview is set."
+            )
+        pipe_mv = pipe_dit
+        mv_backend = "dit"
+    else:
+        if pipe_sd is None:
+            raise RuntimeError(
+                "SD pipeline not initialized but use_dit_multiview is False."
+            )
+        pipe_mv = pipe_sd
+        mv_backend = "sd"
+
+    # counterfactual backend
+    if args.cf_backend == "dit":
+        if args.num_counterfactual > 0:
+            if pipe_dit is None:
+                raise RuntimeError(
+                    "DiT pipeline not initialized but --cf_backend dit is set."
+                )
+            pipe_cf = pipe_dit
+        else:
+            pipe_cf = None  # not used
+        cf_backend = "dit"
+    else:
+        if args.num_counterfactual > 0:
+            if pipe_sd is None:
+                raise RuntimeError(
+                    "SD pipeline not initialized but --cf_backend sd is set."
+                )
+            pipe_cf = pipe_sd
+        else:
+            pipe_cf = None  # not used
+        cf_backend = "sd"
+
     clip_model, clip_preprocess = setup_clip(
         device=device,
         clip_model_name=args.clip_model,
@@ -892,15 +1072,19 @@ def main():
         total=total_catalog,
         desc=f"Augment {split} catalog",
         unit="crop",
-    ) as pbar:    
+    ) as pbar:
 
         for sku_id, sku_info, entry, crop_abs in iter_catalog_entries(
-            meta, sku_root, split, max_skus=args.max_skus,
+            meta,
+            sku_root,
+            split,
+            max_skus=args.max_skus,
             shuffle=args.shuffle_skus,
-            seed=args.seed,            
+            seed=args.seed,
         ):
             if not crop_abs.exists():
                 print(f"[WARN] Missing crop image: {crop_abs}")
+                pbar.update(1)
                 continue
 
             # (1) Multi-view synthesis (same SKU)
@@ -911,7 +1095,7 @@ def main():
                 sku_info=sku_info,
                 entry=entry,
                 crop_abs=crop_abs,
-                pipe=pipe,
+                pipe=pipe_mv,
                 clip_model=clip_model,
                 clip_preprocess=clip_preprocess,
                 device=device,
@@ -923,6 +1107,7 @@ def main():
                 color_max_diff=args.mv_color_max_diff,
                 mv_subdir=args.mv_subdir,
                 mv_suffix=args.mv_suffix,
+                mv_backend=mv_backend,
             )
 
             # (2) Counterfactual negatives (new SKU ids), usually only on train split.
@@ -934,7 +1119,7 @@ def main():
                     sku_info=sku_info,
                     entry=entry,
                     crop_abs=crop_abs,
-                    pipe=pipe,
+                    pipe=pipe_cf,
                     clip_model=clip_model,
                     clip_preprocess=clip_preprocess,
                     device=device,
@@ -947,6 +1132,7 @@ def main():
                     color_min_diff=args.cf_color_min_diff,
                     cf_subdir=args.cf_subdir,
                     cf_suffix=args.cf_suffix,
+                    cf_backend=cf_backend,
                 )
 
             pbar.update(1)

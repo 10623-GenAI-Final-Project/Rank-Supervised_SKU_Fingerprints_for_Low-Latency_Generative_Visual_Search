@@ -8,7 +8,7 @@ echo "Using GPU: ${CUDA_VISIBLE_DEVICES}"
 
 JSONL_ROOT=${JSONL_ROOT:-"./data"}
 SKU_ROOT=${SKU_ROOT:-"/data/patrick/10623GenAI/final_proj/data/DeepFashion2_SKU"}
-OUT_DIR=${OUT_DIR:-"/data/patrick/10623GenAI/final_proj/checkpoints/baseline1_reid"}
+OUT_DIR=${OUT_DIR:-"/data/patrick/10623GenAI/final_proj/checkpoints/baseline1_reid_run3"}
 
 mkdir -p "${OUT_DIR}"
 
@@ -31,4 +31,4 @@ python -m train.train_reid_df2 \
   --min_lr 1e-6  \
   --wandb \
   --wandb_project 10623finalproj_df2_reid_baseline1 \
-  --wandb_run_name "baseline1_reid_bs64_e40"  
+  --wandb_run_name "baseline1_reid_bs64_e40_run3"  

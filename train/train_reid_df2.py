@@ -406,6 +406,10 @@ def main():
                     device=device,
                 )
 
+                gallery_embs = gallery_embs.to(device)
+                gallery_labels = gallery_labels.to(device)
+                query_embs = query_embs.to(device)
+
                 val_metrics = compute_metrics(
                     gallery_embs=gallery_embs,
                     gallery_labels=gallery_labels,

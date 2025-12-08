@@ -17,8 +17,8 @@ echo "PROJECT_ROOT = ${PROJECT_ROOT}"
 echo "SKU_ROOT     = ${SKU_ROOT}"
 echo
 
-# ---------- Pretrained DiT/SD augmentation (multi-view only) ----------
-python -m gen.gen_dit_aug_df2 \
+# ---------- Pretrained SD augmentation (multi-view only) ----------
+python -m gen.gen_sd_aug_df2 \
   --sku_root "$SKU_ROOT" \
   --split train \
   --num_views 4 \
@@ -26,34 +26,29 @@ python -m gen.gen_dit_aug_df2 \
   --max_skus 5500 \
   --shuffle_skus \
   --seed 16831 \
-  --out_suffix dit_clipsku_sub5p5k_nv4 \
-  --mv_subdir catalog_dit_light_sub5p5k_nv4 \
+  --out_suffix sd_ft1ep_clipsku_sub5p5k_nv4 \
+  --mv_subdir catalog_sd_ft1ep_light_sub5p5k_nv4 \
   --mv_suffix aug_light \
   --sd_model runwayml/stable-diffusion-v1-5 \
   --clip_model ViT-B-16 \
   --clip_pretrained laion2b_s34b_b88k \
   --clip_sku_ckpt /data/patrick/10623GenAI/final_proj/checkpoints/baseline5_ft_bestshot_bs64_text0p1_unlock2_ep6_lr3e-4/clip_sku_baseline_final_best.pt \
+  --sd_lora_ckpt /data/patrick/10623GenAI/final_proj/checkpoints/sd_lora_df2_v1_lr1e-4_bs4_ep1_r16/sd_lora_df2_lora_only.pth \
   --device cuda
 
-#python -m gen.gen_dit_aug_df2 \
+#python -m gen.gen_sd_aug_df2 \
   #--sku_root "$SKU_ROOT" \
   #--split train \
   #--num_views 4 \
   #--num_counterfactual 0 \
-  #--out_suffix dit_pretrained_aug \
+  #--max_skus 5500 \
+  #--shuffle_skus \
+  #--seed 16831 \
+  #--out_suffix sd_clipsku_sub5p5k_nv4 \
+  #--mv_subdir catalog_sd_light_sub5p5k_nv4 \
+  #--mv_suffix aug_light \
   #--sd_model runwayml/stable-diffusion-v1-5 \
   #--clip_model ViT-B-16 \
   #--clip_pretrained laion2b_s34b_b88k \
-  #--device cuda  
-  ##--clip_sku_ckpt /data/patrick/10623GenAI/final_proj/checkpoints/baseline3_clip_sku_bs64/clip_sku_baseline_final.pt \
-
-# if you want to fine-tuned DiT, generating finetuned version, run with：
-# python -m gen.gen_dit_aug_df2 \
-#   --sku_root "$SKU_ROOT" \
-#   --split train \
-#   --num_views 2 \
-#   --num_counterfactual 0 \
-#   --out_suffix dit_finetuned_aug \
-#   --sd_model /path/to/your_finetuned_dit_or_sd \
-#   --device cuda
-
+  #--clip_sku_ckpt /data/patrick/10623GenAI/final_proj/checkpoints/baseline5_ft_bestshot_bs64_text0p1_unlock2_ep6_lr3e-4/clip_sku_baseline_final_best.pt \
+  #--device cuda
