@@ -363,17 +363,10 @@ def main():
     # Apply the predicted action to the original image
     processed_img = ACTION_FUNCS[action](original_img.copy())
     
-    # Get the processed image in vector form (CLIP embedding)
-    with torch.no_grad():
-        processed_clip_input = preprocess(processed_img).unsqueeze(0).to(device)
-        processed_img_vector = clip_model.encode_image(processed_clip_input)
-        processed_img_vector = processed_img_vector / processed_img_vector.norm(dim=-1, keepdim=True)  # Normalize
-        processed_img_vector = processed_img_vector.squeeze(0).cpu()  # Remove batch dim and move to CPU
+    print(f"\nProcessed image size: {processed_img.size}")
+    print(f"Processed image mode: {processed_img.mode}")
     
-    print(f"\nProcessed image vector shape: {processed_img_vector.shape}")
-    print(f"Processed image vector (first 10 values): {processed_img_vector[:10].tolist()}")
-    
-    return action, action_id, processed_img_vector
+    return action, action_id, processed_img
 
 
 if __name__ == "__main__":
