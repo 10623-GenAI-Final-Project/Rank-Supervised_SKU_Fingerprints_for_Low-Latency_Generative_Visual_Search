@@ -23,6 +23,7 @@ from diffusers import (
 )
 
 import logging
+from train.train_sd_lora_df2 import inject_lora_into_unet
 
 logging.getLogger("diffusers").setLevel(logging.ERROR)
 logging.getLogger("transformers").setLevel(logging.ERROR)
@@ -298,20 +299,47 @@ def cosine_sim(a: torch.Tensor, b: torch.Tensor) -> float:
 # Diffusion (DiT/SD) helpers
 # ============================================================
 
-
 def setup_diffusion(
     device: torch.device,
     model_name: str = "runwayml/stable-diffusion-v1-5",
+    lora_ckpt: str | None = None,
+    lora_rank: int = 4,
+    lora_alpha: float = 1.0,
 ) -> StableDiffusionImg2ImgPipeline:
     """
     Create an image-to-image diffusion pipeline (SD1.5 img2img).
 
-    NOTE: Here we use SD1.5 img2img (U-Net-based). If you have DiT-based img2img checkpoint, you can change the model_name directly.
+    If lora_ckpt is provided, we:
+      1) inject custom LoRA modules into the UNet (same logic as in train_sd_lora_df2.py)
+      2) load the saved LoRA weights from the checkpoint.
     """
     pipe = StableDiffusionImg2ImgPipeline.from_pretrained(model_name)
-    pipe = pipe.to(device)
     pipe.set_progress_bar_config(disable=True)
     pipe.enable_attention_slicing("max")
+
+    if lora_ckpt is not None:
+        print(f"[INFO] Loading SD LoRA checkpoint from {lora_ckpt}")
+        ckpt = torch.load(lora_ckpt, map_location="cpu")
+
+        ckpt_rank = ckpt.get("lora_rank", lora_rank)
+        ckpt_alpha = ckpt.get("lora_alpha", lora_alpha)
+
+        # 1) create LoRA modules on the current UNet
+        inject_lora_into_unet(
+            pipe.unet,
+            rank=ckpt_rank,
+            alpha=ckpt_alpha,
+        )
+
+        # 2) load LoRA weights
+        lora_state = ckpt["lora_state_dict"]
+        missing, unexpected = pipe.unet.load_state_dict(lora_state, strict=False)
+        if missing:
+            print(f"[LoRA] Missing keys when loading LoRA weights: {len(missing)}")
+        if unexpected:
+            print(f"[LoRA] Unexpected keys when loading LoRA weights: {len(unexpected)}")
+
+    pipe = pipe.to(device)
     return pipe
 
 
@@ -1100,6 +1128,27 @@ def parse_args():
         default=42,
         help="Random seed for SKU shuffling.",
     )
+    parser.add_argument(
+        "--sd_lora_ckpt",
+        type=str,
+        default=None,
+        help=(
+            "Optional path to SD LoRA checkpoint (.pth) trained by train_sd_lora_df2.py. "
+            "If provided, it will be loaded into the SD img2img UNet."
+        ),
+    )
+    parser.add_argument(
+        "--sd_lora_rank",
+        type=int,
+        default=4,
+        help="Rank of LoRA adapter.",
+    )
+    parser.add_argument(
+        "--sd_lora_alpha",
+        type=float,
+        default=1.0,
+        help="Scaling factor alpha for LoRA (output = base + alpha/r * BAx).",
+    )
 
     return parser.parse_args()
 
@@ -1119,7 +1168,13 @@ def main():
     sku2texts = build_sku_catalog_text_map(orig_jsonl_path)
 
     # 2) Setup diffusion & CLIP
-    pipe_sd = setup_diffusion(device=device, model_name=args.sd_model)
+    pipe_sd = setup_diffusion(
+        device=device,
+        model_name=args.sd_model,
+        lora_ckpt=args.sd_lora_ckpt,
+        lora_rank=args.sd_lora_rank,
+        lora_alpha=args.sd_lora_alpha
+    )
 
     pipe_dit = None
     if args.use_dit_multiview or args.cf_backend == "dit":

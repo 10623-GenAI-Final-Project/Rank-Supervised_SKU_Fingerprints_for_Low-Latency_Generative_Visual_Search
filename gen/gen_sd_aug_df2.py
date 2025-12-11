@@ -965,6 +965,18 @@ def parse_args():
             "If provided, it will be loaded into the SD img2img UNet."
         ),
     )
+    parser.add_argument(
+        "--sd_lora_rank",
+        type=int,
+        default=4,
+        help="Rank of LoRA adapter.",
+    )
+    parser.add_argument(
+        "--sd_lora_alpha",
+        type=float,
+        default=1.0,
+        help="Scaling factor alpha for LoRA (output = base + alpha/r * BAx).",
+    )
 
     return parser.parse_args()
 
@@ -999,6 +1011,8 @@ def main():
             device=device,
             model_name=args.sd_model,
             lora_ckpt=args.sd_lora_ckpt,
+            lora_rank=args.sd_lora_rank,
+            lora_alpha=args.sd_lora_alpha
         )
 
     pipe_dit = None

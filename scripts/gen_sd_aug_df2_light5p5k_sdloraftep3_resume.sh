@@ -18,7 +18,7 @@ echo "SKU_ROOT     = ${SKU_ROOT}"
 echo
 
 # ---------- Pretrained SD augmentation (multi-view only) ----------
-python -m gen.gen_sd_aug_df2 \
+python -m gen.gen_sd_aug_df2_resume \
   --sku_root "$SKU_ROOT" \
   --split train \
   --num_views 4 \
@@ -26,17 +26,17 @@ python -m gen.gen_sd_aug_df2 \
   --max_skus 5500 \
   --shuffle_skus \
   --seed 16831 \
-  --out_suffix sd_ft3ep_clipsku_sub5p5k_nv4_run2 \
-  --mv_subdir catalog_sd_ft3ep_light_sub5p5k_nv4_run2 \
+  --out_suffix sd_ft3ep_clipsku_sub5p5k_nv4 \
+  --mv_subdir catalog_sd_ft3ep_light_sub5p5k_nv4 \
   --mv_suffix aug_light \
   --sd_model runwayml/stable-diffusion-v1-5 \
   --clip_model ViT-B-16 \
   --clip_pretrained laion2b_s34b_b88k \
   --clip_sku_ckpt /data/patrick/10623GenAI/final_proj/checkpoints/baseline5_ft_bestshot_bs64_text0p1_unlock2_ep6_lr3e-4/clip_sku_baseline_final_best.pt \
   --sd_lora_ckpt /data/patrick/10623GenAI/final_proj/checkpoints/sd_lora_df2_v1_lr1e-4_bs4_ep3_r16/sd_lora_df2_lora_only.pth \
-  --sd_lora_rank 16 \
-  --sd_lora_alpha 1.0 \
-  --device cuda
+  --device cuda \
+  --resume_from_disk
+
 
 #python -m gen.gen_sd_aug_df2 \
   #--sku_root "$SKU_ROOT" \
