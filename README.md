@@ -1,243 +1,313 @@
 # Rank-Supervised SKU Fingerprints for Low-Latency Generative Visual Search
 
-Final project for **10-623 Generative AI (CMU)**.
+> **Author**: Patrick Chen*, MingYang Yu, Kanlong Ye  
+> **Course**: 10-623 Generative AI, Carnegie Mellon University  
+> 📄 [View Project Final Report](./docs/10623_Final_Project_Report.pdf)
 
-We aim to build a practical **fashion visual search system** where a user can:
-- upload a noisy phone photo (user / consumer image), or  
-- type a short text description,
+This repository implements a production-style fashion visual search system that maps each Stock Keeping Unit (SKU) to **a single shared embedding** (“SKU-per-vector”) used for both image and text queries. The system is built and evaluated on **DeepFashion2** and combines:
 
-and the system retrieves the **exact product SKU** from a catalog with **low latency** (a single embedding lookup in FAISS plus a small amount of pre-processing).
-
-The core idea is to learn a single, high-quality **SKU fingerprint vector** per product, trained directly under retrieval supervision on **DeepFashion2**.
-
----
-
-## 1. Problem Setting
-
-Given:
-- A set of **catalog images** (shop photos) and **query images** (user photos) from DeepFashion2.
-- A set of **text queries** derived from metadata (category, viewpoint, occlusion, etc.).
-
-We want to support:
-1. **Image → SKU retrieval** (user photo → product)
-2. **Text → SKU retrieval** (short text → product)
-3. Fast FAISS search with **one vector per SKU** (“SKU-per-vector”).
-
-This is different from many existing systems that store several vectors per product, which increases index size and slows down search.
+- CLIP-based image–text encoders
+- A **rank-supervised SKU fingerprint aggregator** (Q-Former-style)
+- **Stable Diffusion v1.5 + LoRA** generative multi-view catalog augmentation (offline only)
+- An optional **Visual-Language-Action (VLA)** query image pre-processing policy
+- Compact dense retrieval over SKU fingerprints with end-to-end CPU latency measured from cosine similarity + reduction-max to final SKU scores
 
 ---
 
-## 2. Dataset: DeepFashion2 and SKU Definition
+## 1. Project Overview
 
-We use **DeepFashion2 (DF2)** as the only dataset for both training and evaluation.
+<div align="center">
+  <img src="docs/images/overview_low_latency_visual_search.png" alt="Low-latency SKU visual search overview" width="85%" />
+</div>
 
-Each DF2 image has:
-- image-level labels: `source` (shop or user), `pair_id`
-- item-level labels: `style`, `category_id`, `category_name`, `bounding_box`, `occlusion`, `viewpoint`, etc.
+E-commerce platforms must answer a noisy user image or a short text description with the exact purchasable product under tight latency budgets. We target a **SKU-per-vector** regime:
 
-We define a **visual SKU** as:
+- A user submits a query image or short text.
+- The system computes a query embedding using a fine-tuned CLIP encoder (optionally after VLA pre-processing for images).
+- Each SKU is represented by a **single fingerprint vector** distilled from many catalog / generative views.
+- Retrieval reduces to a dense cosine-similarity computation between the query embedding and all SKU fingerprints, followed by a simple top‑K on CPU.
+
+---
+
+## 2. Dataset and SKU Definition
+
+We use **DeepFashion2 (DF2)** as the only dataset.
+
+A **visual SKU** is defined as:
 
 `SKU = (pair_id, style > 0, category_id)`
 
-- Items with `style = 0` are discarded (cannot form positive commercial–consumer pairs).
-- All crops from images with `source = "shop"` are treated as **catalog** images.
-- All crops from images with `source = "user"` are treated as **query** images.
-- SKUs are split into train / validation / test following the original DF2 split, so no SKU leaks across splits.
+- Items with `style = 0` are discarded.
+- Crops from images with `source = "shop"` are treated as **catalog** images.
+- Crops from images with `source = "user"` are treated as **query** images.
+- Train / validation / test splits follow DF2 and are disjoint at the SKU level.
+- Final statistics: **21,190 SKUs** and **198,140 images** (catalog + user).
 
-### 2.1 Preprocessing Pipeline
+<div align="center">
+  <img src="docs/images/df2_sku_examples.png" alt="DeepFashion2 SKU examples: query vs catalog views" width="75%" />
+</div>
 
-All preprocessing is driven by a single script:
-
-```bash
-./scripts/prepare_deepfashion2_sku.sh
-```
-
-This script:
-
-1. Reads the original DF2 data under `data/DeepFashion2_original/` (configurable via `DF2_ROOT`).
-2. For each split (train/validation/test):
-   - Crops each clothing item using its bounding box.
-   - Groups crops into **SKUs** based on `(pair_id, style, category_id)`.
-   - Saves cropped images into (configurable via `SKU_ROOT`):
-     - `<SKU_ROOT>/<split>/catalog/<sku_id>/*.jpg`
-     - `<SKU_ROOT>/<split>/query/<sku_id>/*.jpg`
-   - Writes a JSON file `<split>_sku_metadata.json` with all SKU-level metadata
-     (including `occlusion` and `viewpoint` for each crop).
-3. Reads the SKU metadata and generates image–text pairs stored in
-   `<split>_image_text.jsonl`, where each line describes a single crop:
-
-   ```json
-   {
-     "split": "train",
-     "sku_id": "010001_01_01",
-     "pair_id": 1,
-     "style": 1,
-     "category_id": 1,
-     "category_name": "short sleeve top",
-     "domain": "query",
-     "image_path": "train/query/010001_01_01/000001_item1.jpg",
-     "orig_image_path": "train/image/000001.jpg",
-     "image_id": "000001",
-     "item_idx": 1,
-     "bbox": [x1, y1, x2, y2],
-     "occlusion": 3,
-     "viewpoint": 3,
-     "text": "A user photo of a person wearing a heavily occluded short sleeve top from the side or back."
-   }
-   ```
-
-These JSONL files are the main entry point for training vision-language models.
+All preprocessing (cropping, SKU grouping, and image–text JSONL generation) is handled by the scripts referenced in `RUN.md` (see Section 6).
 
 ---
 
-## 3. Model Overview
+## 3. Method
 
-Our system consists of four main components:
+### 3.1 End-to-End Pipeline
 
-1. **Baseline CLIP / SigLIP retriever**  
-   - A standard dual-encoder model for image–text retrieval.
-   - Provides an initial image encoder and text encoder.
-   - Used as the starting point for both catalog and query embeddings.
+<div align="center">
+  <img src="docs/images/training_inference_pipeline.png" alt="Training and inference pipeline" width="95%" />
+</div>
 
-2. **Generative DiT for catalog view augmentation (offline)**  
-   - A diffusion transformer (DiT) generates additional catalog views:
-     - small viewpoint changes,
-     - mild background edits,
-     - optional “counterfactual” edits as hard negatives.
-   - All generation is done offline; **no DiT calls at query time**.
-   - Generated views are filtered by similarity checks to ensure SKU identity is preserved.
+**Training stage (top)**
 
-3. **Rank-Supervised SKU Fingerprints**  
-   - Each SKU has many catalog view embeddings (real + DiT-generated).
-   - For each view, we evaluate retrieval performance on held-out user queries when that **single view** represents the SKU.
-   - The best-performing view becomes a **teacher fingerprint**.
-   - A small aggregation module (e.g. attention or MLP) is trained to map all view embeddings to a single **SKU fingerprint vector**, using:
-     - distillation toward the best-shot teacher embedding, and
-     - direct retrieval loss (contrastive, margin-based, or ranking loss).
-   - The FAISS index stores only these compact SKU fingerprint vectors.
+1. **Baseline CLIP fine-tuning (Baseline 3)**  
+   - ViT-B/32 CLIP is fine-tuned on DF2 SKU labels for both image and text encoders, using SKU-level cross-entropy loss for images and text.
 
-4. **VLA-style Query Pre-processing Policy (optional)**  
-   - For user images, we consider a discrete set of pre-processing actions
-     (e.g., smart crop, background cleanup, denoise, color correction).
-   - Offline, for each query we evaluate all actions and label the one that
-     yields the best retrieval rank.
-   - A small vision-based policy network is trained to predict the best action.
-   - At inference, we apply at most one action before encoding the query image,
-     keeping latency overhead small.
+2. **Stable Diffusion v1.5 LoRA multi-view generation**  
+   - Offline SD v1.5 img2img + LoRA produces identity-preserving catalog multi-views.
+
+3. **Rank-supervised SKU fingerprint model**  
+   - A Q-Former-style aggregator $(g_\theta\)$ attends over catalog + generative view embeddings and outputs one L2-normalized fingerprint per SKU.
+   - Training uses a combination of:
+     - L2 regression to **best-shot teacher** embeddings (selected per SKU from catalog views),
+     - KL-based **rank distillation** from teacher rankings (search-metric supervision),
+     - Cross-entropy SKU classification over fingerprints.
+
+4. **VLA policy (optional)**  
+   - A lightweight policy network takes CLIP visual features + handcrafted quality features and predicts one of several deterministic image-processing actions (crop, denoise, sharpen, exposure adjust, etc.) to maximize downstream retrieval. Labels are generated automatically from which action yields the best Recall@K on training queries.
+
+**Inference stage (bottom)**
+
+- Pre-computed **SKU fingerprints** are stored as a dense embedding matrix.
+- Given an image or text query, the system:
+  1. (Optionally) applies the VLA-chosen pre-processing to the image.
+  2. Encodes the query via fine-tuned CLIP.
+  3. Computes cosine similarity between the query embedding and every SKU fingerprint on CPU.
+  4. Returns the top-ranked SKUs and representative catalog images.
+
+No approximate nearest-neighbor library (e.g., FAISS) is used; retrieval is a straightforward matrix–vector product plus top‑K.
+
+### 3.2 Generative Multi-View Augmentation
+
+<div align="center">
+  <img src="docs/images/generative_multiview_sd15.png" alt="Stable Diffusion v1.5 multi-view augmentation" width="95%" />
+</div>
+
+We LoRA-tune Stable Diffusion v1.5 img2img on a subset of DF2 catalog crops and generate identity-preserving multi-view images by:
+
+1. Conditioning on prompts that describe category, visibility, and a simple studio background.
+2. Running img2img with low noise strength.
+3. Filtering candidates by CLIP cosine similarity, color distance, and NSFW checks.
+
+These synthetic views expand the set of catalog embeddings used by the aggregator **without increasing online latency**, since generation is fully offline. In the final experiments, we augment up to **5.5k SKUs (~30% of all SKUs)** and observe consistent gains.
 
 ---
 
-## 4. Repository Structure
+## 4. Results
 
-A simplified view of the repository:
+### 4.1 Quantitative Results
+
+<div align="center">
+  <img src="docs/images/quantitative_results.png" alt="Quantitative results: image and text retrieval with latency" width="100%" />
+</div>
+
+Key findings on DeepFashion2 validation (image-to-SKU and text-to-SKU):
+
+- **Image → SKU (Seen+Zero SKUs):**
+  - ReID baseline (Baseline 1): **R@1 = 0.571**, p95 = 2.62 ms.
+  - Fine-tuned CLIP mean-SKU (Baseline 3): **R@1 = 0.587**, p95 = 0.37 ms.
+  - Proposed fingerprint (Seen-SKU): **R@1 = 0.857**, p95 = 0.13 ms.
+  - Proposed-M (+ SD multi-view, Seen-SKU): **R@1 = 0.865**, p95 = 0.09 ms.
+  - Proposed-M (Seen+Zero SKUs): **R@1 = 0.602**, p95 = 0.29 ms.
+
+- **Text → SKU (Seen-SKU):**
+  - Baseline CLIP mean-SKU models are weak under metadata-style prompts (R@1 ≤ 0.005).
+  - Proposed fingerprint: **R@1 = 0.061**; Proposed-M: **R@1 = 0.071**, with similar trends for R@5/10 and NDCG@10.
+
+Overall, rank-supervised fingerprints substantially outperform all baselines on image retrieval while offering **lower CPU latency** than both the ReID and CLIP baselines. Multi-view augmentation (Proposed-M) consistently improves Recall@1 and latency by giving the aggregator more pose and background variation while keeping a single fingerprint per SKU.
+
+Latency is measured as **end-to-end query time on CPU**, from query embedding to final ranked SKU list, including cosine similarity against all SKU fingerprints and scatter-style reduction to SKU scores.
+
+### 4.2 Qualitative Results
+
+<div align="center">
+  <img src="docs/images/qualitative_results.png" alt="Qualitative retrieval examples" width="95%" />
+</div>
+
+- Top rows: successful image → SKU retrieval under significant changes in pose and background.
+- Bottom row: text query example where the retrieved SKU is visually plausible but not the exact ground truth, highlighting ambiguity in short metadata-based descriptions.
+
+---
+
+## 5. Repository Layout
+
+A simplified view of the repository structure:
 
 ```text
 .
 ├── dataset/
-│   ├── build_deepfashion2_sku_crops.py   # DF2 → SKU crops + metadata
-│   ├── build_deepfashion2_text_prompts.py# DF2 → image-text JSONL
-│   └── ...                               # Dataset / dataloader code
-├── models/
-│   ├── clip_baseline.py                  # CLIP / SigLIP baseline
-│   ├── sku_fingerprint_head.py           # SKU aggregation / distillation
-│   ├── dit_generator.py                  # DiT for catalog view synthesis
-│   └── vla_policy.py                     # Query pre-processing policy (optional)
-├── train/
-│   ├── train_retriever.py                # Train CLIP-style retriever
-│   ├── train_sku_fingerprints.py         # Train SKU fingerprint head
-│   ├── train_vla_policy.py               # Train query pre-processing policy
+│   ├── build_deepfashion2_sku_crops.py        # DF2 → SKU crops + metadata
+│   ├── build_deepfashion2_text_prompts.py     # DF2 → synthetic text prompts
 │   └── ...
-├── scripts/
-│   ├── prepare_deepfashion2_sku.py       # One-command DF2 preprocessing
-│   ├── eval_retrieval.py                 # Compute Recall@K, mAP, etc.
-│   └── faiss_index_utils.py              # Build / query FAISS index
-├── RUN.md                                # Detailed preprocessing instructions
-└── README.md                             # (this file)
+├── models/
+│   ├── clip_sku_baseline.py                   # CLIP / SigLIP-style retrievers
+│   ├── sku_fingerprint_student.py             # Q-Former-style SKU aggregator
+│   └── reid_resnet50_bnneck.py                # ReID ResNet-50 baseline model
+├── VLA_model/                                 # VLA policy + image ops + features
+├── train/                                     # (If present) training entry points
+│   ├── train_reid_df2.py                      # ReID ResNet-50 baseline model traininer
+│   ├── train_clip_sku_df2.py                  # CLIP model fine-tuner
+│   ├── train_sku_fingerprint_distill.py       # The SKU fingerprint aggregator trainer
+│   ├── train_sd_lora_df2.py                   # The SD v1.5 Img2Img model LoRA fine-tuner
+├── eval/
+│   ├── eval_reid_df2.py                       # ReID / CLIP evaluation helpers
+│   └── eval_sku_fingerprint_student.py        # Main fingerprint evaluation
+├── scripts/                                   # Reproduction and experiment scripts
+│   ├── prepare_deepfashion2_sku.sh
+│   ├── prepare_df2_reid_splits.sh
+│   ├── train_baseline1_reid.sh
+│   ├── eval_baseline1_reid_val.sh
+│   ├── train_clip_sku_df2.sh
+│   ├── eval_clip_sku_df2.sh
+│   ├── train_sd_lora_df2*.sh
+│   ├── gen_sd_aug_df2*.sh
+│   ├── gen_bestshot_teachers_df2.sh
+│   ├── train_sku_fingerprint_student*.sh
+│   ├── eval_sku_fingerprint_student.sh
+│   └── eval_sku_fingerprint_student_demo.sh
+├── docs/
+│   ├── 10623_Final_Project_Report.pdf         # Final project report (see below)
+│   └── images/
+│       ├── overview_low_latency_visual_search.png
+│       ├── df2_sku_examples.png
+│       ├── generative_multiview_sd15.png
+│       ├── qualitative_results.png
+│       ├── quantitative_results.png
+│       └── training_inference_pipeline.png
+├── RUN.md                                     # Detailed, script-level instructions
+└── README.md                                  # This file
 ```
-
-*(Some file names may differ slightly from the actual implementation; check the code for the exact naming.)*
 
 ---
 
-## 5. How to Get Started
+## 6. How to Run (High-Level)
 
-### 5.1 Environment
+For full details, please see **`RUN.md`**, but the main steps are:
 
-Create a conda environment (example):
+1. **Prepare the SKU dataset**
 
-```bash
-conda create -n 10623_final_proj python=3.10
-conda activate 10623_final_proj
+   ```bash
+   ./scripts/prepare_deepfashion2_sku.sh
+   ```
 
-pip install -r requirements.txt
-```
+   This script:
+   - Crops DF2 images by bounding boxes.
+   - Groups crops into SKUs.
+   - Writes `<split>_sku_metadata.json` and `<split>_image_text*.jsonl`.
 
-### 5.2 Prepare DeepFashion2 and SKU data
+2. **Prepare ReID-style splits for Baseline 1 (optional)**
 
-1. Download and unzip DeepFashion2 into `DF2_ROOT` (or any
-   directory of your choice).
+   ```bash
+   ./scripts/prepare_df2_reid_splits.sh
+   ```
 
-2. Run the preprocessing script from the project root:
+3. **Train baselines**
 
-```bash
-chmod +x ./scripts/prepare_deepfashion2_sku.sh
+   - ReID baseline:
 
-DF2_ROOT=/path/to/DeepFashion2_original SKU_ROOT=/path/to_your_generated/DeepFashion2_SKU SPLITS="train validation test" ./scripts/prepare_deepfashion2_sku.sh
-```
+     ```bash
+     ./scripts/train_baseline1_reid.sh
+     ./scripts/eval_baseline1_reid_val.sh
+     ```
 
-3. After this step you should see:
-   - Cropped images under `${SKU_ROOT}/<split>/{catalog,query}/<sku_id>/*.jpg`
-   - Metadata files: `${SKU_ROOT}/<split>_sku_metadata.json`
-   - Image–text files: `${SKU_ROOT}/<split>_image_text.jsonl`
+   - CLIP/SigLIP baselines (Baseline 2 & 3):
 
-### 5.3 Train the baseline retriever
+     ```bash
+     ./scripts/train_clip_sku_df2.sh
+     ./scripts/eval_clip_sku_df2.sh
+     ```
 
-```bash
-python train/train_retriever.py   --data_root data/DeepFashion2_SKU   --train_split train   --val_split validation   --model_name clip-base   --output_dir outputs/retriever_clip_base
-```
+4. **Train Stable Diffusion LoRA (optional, offline)**
 
-### 5.4 Train SKU fingerprint head
+   ```bash
+   ./scripts/train_sd_lora_df2.sh <GPU_ID>
+   # plus additional variants such as:
+   ./scripts/train_sd_lora_df2_ep1.sh <GPU_ID>
+   ```
 
-```bash
-python train/train_sku_fingerprints.py   --data_root data/DeepFashion2_SKU   --retriever_ckpt outputs/retriever_clip_base/best.pt   --output_dir outputs/sku_fingerprints
-```
+5. **Generate multi-view catalog images (offline)**
 
-(The exact flags may vary; check the corresponding training scripts.)
+   ```bash
+   ./scripts/gen_sd_aug_df2_resume.sh <GPU_ID>
+   ./scripts/gen_sd_aug_df2_light13k.sh <GPU_ID>
+   ./scripts/gen_sd_aug_df2_light5p5k.sh <GPU_ID>
+   ./scripts/gen_sd_aug_df2_light3k.sh <GPU_ID>
+   # and SD+LoRA variants:
+   ./scripts/gen_sd_aug_df2_light5p5k_sdloraftep1.sh <GPU_ID>
+   ./scripts/gen_sd_aug_df2_light5p5k_sdloraftep3.sh <GPU_ID>
+   ./scripts/gen_sd_aug_df2_light13k_sdloraftep1.sh <GPU_ID>
+   ./scripts/gen_sd_aug_df2_light13k_sdloraftep3.sh <GPU_ID>
+   ```
+
+6. **Generate teacher embeddings for distillation**
+
+   ```bash
+   ./scripts/gen_bestshot_teachers_df2.sh <GPU_ID>
+   ```
+
+7. **Train the SKU fingerprint student (aggregator)**
+
+   ```bash
+   ./scripts/train_sku_fingerprint_student.sh <GPU_ID>
+   ./scripts/train_sku_fingerprint_student_multiview3k.sh <GPU_ID>
+   ./scripts/train_sku_fingerprint_student_multiview5p5k.sh <GPU_ID>
+   ./scripts/train_sku_fingerprint_student_multiview5p5k_sd1ep.sh <GPU_ID>
+   ./scripts/train_sku_fingerprint_student_multiview5p5k_sd3ep.sh <GPU_ID>
+   ```
+
+8. **Evaluate distilled SKU fingerprints**
+
+   ```bash
+   ./scripts/eval_sku_fingerprint_student.sh <GPU_ID>
+   ```
+
+9. **Run the main demo / reproduction script**
+
+   ```bash
+   ./scripts/eval_sku_fingerprint_student_demo.sh <GPU_ID>
+   ```
+
+   This script loads:
+   - Fine-tuned CLIP checkpoint (Baseline 3),
+   - Student aggregator weights,
+   - (Optionally) VLA policy weights,
+
+   and evaluates the system on DeepFashion2 validation, reporting image and text retrieval metrics and latency.
 
 ---
 
-## 6. Evaluation
+## 7. Final Project Report
 
-We evaluate the system on DeepFashion2 using:
+The full paper-style report (12 pages) is included in the repository:
 
-- **Recall@K** and **mAP** for:
-  - query image → SKU retrieval,
-  - text → SKU retrieval.
-- Latency metrics:
-  - time per query for encoding + FAISS search,
-  - size of the FAISS index (number of vectors × dimension).
+- **Path:** 📄[View Project Final Report](./docs/10623_Final_Project_Report.pdf)  
+- **Recommended citation/title:**  
+  *Patrick Chen\*, Mingyang Yu, Kanlong Ye. “Rank-Supervised SKU Fingerprints for Low-Latency Generative Visual Search.” 10-423/623/723 Generative AI Final Report, Carnegie Mellon University, 2025.*
 
-Baselines to compare against:
+You can open it directly from the repo root:
 
-1. CLIP/SigLIP with multiple catalog embeddings per SKU.
-2. CLIP/SigLIP with naive average pooling over catalog views.
-3. Our **rank-supervised SKU fingerprints** with one vector per SKU.
+```bash
+open docs/10623_Final_Project_Report.pdf   # macOS
+xdg-open docs/10623_Final_Project_Report.pdf  # Linux
+```
 
 ---
 
-## 7. Acknowledgements
+## 8. Acknowledgements and License
 
-- DeepFashion2 dataset authors for providing a rich consumer–to–shop
-  dataset with detailed annotations.
-- OpenAI / Google for CLIP / SigLIP models and open-sourced codebases
-  that inspired the retriever baseline.
-- The 10-623 teaching staff and classmates for feedback on this project.
+This codebase was developed as a course project for **10-423/623/723 Generative AI at CMU** and is intended for research and educational use only.
 
----
-
-## 8. License
-
-This project is for educational and research purposes as part of
-10-623 Generative AI at CMU. Please check the DeepFashion2
-license and any pretrained model licenses before using this code in
-commercial applications.
+- Please check the **DeepFashion2** dataset license before using the data for any non-academic purpose.
+- Respect the licenses of any pretrained models used (CLIP, Stable Diffusion v1.5, etc.).
+- If you build on this repository in academic work, please cite the final project report and the original DeepFashion2 and CLIP papers.
