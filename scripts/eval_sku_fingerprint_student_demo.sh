@@ -64,16 +64,18 @@ python -m eval.eval_sku_fingerprint_student \
   --device cuda \
   --ndcg_k 10 \
   --recall_ks 1 5 10 \
-  --eval_cpu_latency \
   --demo_image_num 20 \
   --demo_image_output_dir /data/patrick/10623GenAI/final_proj/demo_output/image_demo_out_20 \
   --demo_text_num 20 \
   --demo_text_output_dir /data/patrick/10623GenAI/final_proj/demo_output/text_demo_out_20 \
+  --eval_cpu_latency \
   --eval_all_val_skus \
   --wandb_project 10623_SKU_Fingerprint \
   --wandb_run_name "eval_distilled_skufingerprint_e20_sd_sub5p5k_nv4_allvalskus_demo_20"
   #--eval_cpu_latency \
   #--eval_all_val_skus \
+  #--use_vla \
+  #--vla_checkpoint $PROJECT_ROOT/VLA_model/checkpoint_vla/vla_policy.pt \
   #--wandb_run_name "eval_distilled_skufingerprint_e200"
   #--wandb_run_name "eval_distilled_skufingerprint_e20_sd_sub5p5k_nv4_allvalskus"
   #--wandb_run_name "eval_distilled_skufingerprint_e20"

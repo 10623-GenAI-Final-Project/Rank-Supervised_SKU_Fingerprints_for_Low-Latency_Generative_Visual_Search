@@ -67,9 +67,11 @@ python -m eval.eval_sku_fingerprint_student \
   --eval_cpu_latency \
   --eval_all_val_skus \
   --wandb_project 10623_SKU_Fingerprint \
-  --wandb_run_name "eval_distilled_skufingerprint_e20_sd_sub5p5k_nv4_allvalskus"
+  --wandb_run_name "eval_distilled_skufingerprint_e20_sd_sub5p5k_nv4_allvalskus_vla"
   #--eval_cpu_latency \
   #--eval_all_val_skus \
+  #--use_vla \
+  #--vla_checkpoint $PROJECT_ROOT/VLA_model/checkpoint_vla/vla_policy.pt \
   #--wandb_run_name "eval_distilled_skufingerprint_e200"
   #--wandb_run_name "eval_distilled_skufingerprint_e20_sd_sub5p5k_nv4_allvalskus"
   #--wandb_run_name "eval_distilled_skufingerprint_e20"

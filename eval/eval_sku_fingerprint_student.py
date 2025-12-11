@@ -6,7 +6,7 @@ import json
 import random  # [DEMO] for random sampling
 import shutil  # [DEMO] for copying catalog images
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Any
 from PIL import Image  # local import to avoid global dependency
 
 import numpy as np
@@ -21,6 +21,13 @@ from models.clip_sku_baseline import ClipSkuBaseline
 from models.sku_fingerprint_student import SkuFingerprintStudent
 from dataset.df2_clip_sku_dataset import DeepFashion2ImageSkuEvalDataset
 from eval.eval_reid_df2 import compute_metrics
+
+# ---------------------------
+# VLA imports (policy + actions + quality features)
+# ---------------------------
+from VLA_model.model.policy import VLAPolicy
+from VLA_model.Image_processing.image_feature import compute_quality_features
+from VLA_model.Image_processing.image_process import VLAAction, ACTION_FUNCS
 
 
 # ---------------------------
@@ -179,6 +186,24 @@ def parse_args():
         default=None,
         help="Output directory for text-query demo examples.",
     )
+    # VLA options
+    parser.add_argument(
+        "--use_vla",
+        action="store_true",
+        help=(
+            "If set, apply the trained VLA policy to enhance query images "
+            "before encoding them with CLIP-SKU."
+        ),
+    )
+    parser.add_argument(
+        "--vla_checkpoint",
+        type=Path,
+        default=None,
+        help=(
+            "Path to VLA policy checkpoint (vla_policy.pt). "
+            "Required if --use_vla is set."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -223,6 +248,60 @@ def load_clip_sku_model(
 
     return model, preprocess
 
+# ---------------------------
+# Helpers: load VLA policy model
+# ---------------------------
+def load_vla_model(
+    device: torch.device,
+    clip_model_name: str,
+    clip_pretrained: str,
+    ckpt_path: Path,
+    clip_model: Any = None,
+    preprocess: Any = None
+):
+    """
+    Load the VLA policy model and its CLIP visual backbone.
+
+    Returns:
+        policy_model: VLAPolicy
+        clip_model:   open_clip CLIP model used for visual features
+        preprocess:   preprocessing transform for VLA CLIP
+    """
+    print(f"[INFO] Loading VLA policy from {ckpt_path}...")
+
+    # CLIP backbone for VLA (same config as training)
+    if clip_model is None:
+        clip_model, _, preprocess = open_clip.create_model_and_transforms(
+            clip_model_name,
+            pretrained=clip_pretrained,
+        )
+        clip_model = clip_model.to(device)
+        clip_model.eval()
+
+    visual_dim = clip_model.visual.output_dim
+    quality_dim = 10  # fixed in VLA code
+    num_actions = len(VLAAction)
+
+    policy_model = VLAPolicy(
+        visual_dim=visual_dim,
+        quality_dim=quality_dim,
+        num_actions=num_actions,
+    )
+
+    try:
+        state = torch.load(ckpt_path, map_location=device, weights_only=False)
+    except TypeError:
+        state = torch.load(ckpt_path, map_location=device)
+
+    policy_model.load_state_dict(state)
+    policy_model.to(device)
+    policy_model.eval()
+
+    print(
+        f"[INFO] VLA loaded: visual_dim={visual_dim}, "
+        f"quality_dim={quality_dim}, num_actions={num_actions}"
+    )
+    return policy_model, clip_model, preprocess
 
 # ---------------------------
 # Text query dataset & embeddings
@@ -394,6 +473,171 @@ def compute_query_embeddings_clip(
     labels = torch.cat(all_labels, dim=0)
     return embs, labels, all_sku_ids
 
+# ---------------------------
+# Helpers: compute query embeddings with VLA-enhanced images
+# ---------------------------
+@torch.no_grad()
+def compute_query_embeddings_clip_with_vla(
+    sku_root: Path,
+    val_image_text: Path,
+    sku2idx: Dict[str, int],
+    clip_sku_model: ClipSkuBaseline,
+    sku_preprocess,
+    vla_policy: VLAPolicy,
+    vla_clip_model,
+    vla_preprocess,
+    batch_size: int,
+    device: torch.device,
+    num_workers: int = 4,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Two-stage version (faster):
+
+      Stage 1 (parallel, CPU-heavy):
+        - read query records from JSONL into a list of (img_path, sku_idx)
+        - DataLoader with num_workers>0:
+            * open image
+            * vla_preprocess(img)
+            * compute_quality_features(img)
+        - run VLA to decide action_id for each image
+
+      Stage 2 (simpler, GPU-bound):
+        - reopen images
+        - apply ACTION_FUNCS[action_id]
+        - sku_preprocess(processed_img)
+        - encode with CLIP-SKU
+
+    Returns:
+        embs:   (Nq, D) tensor of query embeddings
+        labels: (Nq,)  LongTensor of global SKU indices (same index space as sku2idx)
+    """
+
+    # ---------- Collect all query samples (paths + labels) ----------
+    samples: List[Tuple[Path, int]] = []
+    with val_image_text.open("r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            rec = json.loads(line)
+            if rec.get("domain", "catalog") != "query":
+                continue
+
+            sku_id = rec.get("sku_id")
+            img_rel = rec.get("image_path")
+            if not sku_id or not img_rel:
+                continue
+
+            idx = sku2idx.get(sku_id)
+            if idx is None:
+                continue
+
+            img_path = sku_root / img_rel
+            if not img_path.exists():
+                continue
+
+            samples.append((img_path, idx))
+
+    print(f"[INFO] VLA-Query: collected {len(samples)} image queries from {val_image_text}")
+    if len(samples) == 0:
+        return torch.empty(0, 0), torch.empty(0, dtype=torch.long)
+
+    # ---------- Stage 1: precompute VLA actions with DataLoader ----------
+    class VLAActionDataset(torch.utils.data.Dataset):
+        def __init__(self, samples, vla_preprocess):
+            self.samples = samples
+            self.vla_preprocess = vla_preprocess
+
+        def __len__(self):
+            return len(self.samples)
+
+        def __getitem__(self, i: int):
+            img_path, sku_idx = self.samples[i]
+            img = Image.open(img_path).convert("RGB")
+            # vla image tensor
+            vla_input = self.vla_preprocess(img)
+            # quality features (cv2-heavy)
+            qfeat = torch.tensor(
+                compute_quality_features(img),
+                dtype=torch.float32,
+            )
+            img.close()
+            return vla_input, qfeat, sku_idx, str(img_path)
+
+    vla_dataset = VLAActionDataset(samples, vla_preprocess)
+    vla_loader = DataLoader(
+        vla_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=True,
+    )
+
+    vla_policy.eval().to(device)
+    vla_clip_model.eval().to(device)
+
+    # mapping: img_path(str) -> action_id(int)
+    path_to_action: Dict[str, int] = {}
+    print("[INFO] Stage 1: precomputing VLA actions...")
+    for vla_inputs, qfeats, _sku_labels, img_paths in tqdm(
+        vla_loader, desc="VLA policy (stage 1)"
+    ):
+        vla_inputs = vla_inputs.to(device, non_blocking=True)
+        qfeats = qfeats.to(device, non_blocking=True)
+
+        vfeats = vla_clip_model.encode_image(vla_inputs)
+        vfeats = vfeats / vfeats.norm(dim=-1, keepdim=True)
+
+        logits = vla_policy(vfeats, qfeats)  # (B, num_actions)
+        action_ids = logits.argmax(dim=-1).cpu().tolist()
+
+        for p, a in zip(img_paths, action_ids):
+            path_to_action[p] = a
+
+    assert len(path_to_action) == len(samples), \
+        f"path_to_action ({len(path_to_action)}) != samples ({len(samples)})"
+
+    # ---------- Stage 2: apply VLA actions + encode with CLIP-SKU ----------
+    clip_sku_model.eval().to(device)
+
+    all_embs: List[torch.Tensor] = []
+    all_labels: List[torch.Tensor] = []
+
+    num_samples = len(samples)
+    print("[INFO] Stage 2: encoding VLA-enhanced queries with CLIP-SKU...")
+    for start in tqdm(range(0, num_samples, batch_size), desc="VLA-enhanced query encoding (stage 2)"):
+        batch = samples[start : start + batch_size]
+        paths, labels = zip(*batch)
+
+        # load + apply chosen VLA action
+        processed_imgs: List[Image.Image] = []
+        for p in paths:
+            p_str = str(p)
+            action_id = path_to_action[p_str]
+            action = VLAAction(action_id)
+
+            # Use a context manager and COPY the processed image
+            with Image.open(p).convert("RGB") as img:
+                proc_img = ACTION_FUNCS[action](img)
+                proc_img = proc_img.copy()   # <-- detach from the underlying file
+
+            processed_imgs.append(proc_img)
+
+        # encode with CLIP-SKU
+        sku_inputs = torch.stack(
+            [sku_preprocess(img) for img in processed_imgs], dim=0
+        ).to(device, non_blocking=True)
+
+        for img in processed_imgs:
+            img.close()
+
+        emb = clip_sku_model.encode_image(sku_inputs)  # (B, D)
+        all_embs.append(emb.cpu())
+        all_labels.append(torch.tensor(labels, dtype=torch.long))
+
+    embs = torch.cat(all_embs, dim=0)
+    labels_t = torch.cat(all_labels, dim=0)
+    return embs, labels_t
 
 # ---------------------------
 # Helpers: val catalog embeddings → per-SKU lists
@@ -728,6 +972,23 @@ def main():
     for sid, idx in sku2idx.items():
         idx2sku[idx] = sid
 
+    # Optionally load VLA policy for query enhancement
+    vla_policy = None
+    vla_clip_model = None
+    vla_preprocess = None
+    if args.use_vla:
+        if args.vla_checkpoint is None:
+            raise ValueError("--use_vla was set but --vla_checkpoint is None.")
+        print(f"[INFO] VLA enhancement enabled. Checkpoint: {args.vla_checkpoint}")
+        vla_policy, vla_clip_model, vla_preprocess = load_vla_model(
+            device=device,
+            clip_model_name=args.clip_model,
+            clip_pretrained=args.clip_pretrained,
+            ckpt_path=args.vla_checkpoint,
+            clip_model=clip_model.clip_model,
+            preprocess=preprocess,
+        )
+
     # [DEMO] Precompute catalog image paths if any demo is requested
     sku_to_catalog_paths: Dict[int, List[Path]] = {}
     if args.demo_image_num > 0 or args.demo_text_num > 0:
@@ -765,24 +1026,46 @@ def main():
     gallery_labels = torch.arange(num_eval_skus, dtype=torch.long, device=device)
 
     # 6) Build query dataset and compute query embeddings (CLIP-SKU)
-    query_ds = DeepFashion2ImageSkuEvalDataset(
-        sku_root=args.sku_root,
-        jsonl_path=val_image_text,
-        preprocess=preprocess,
-        sku2idx=sku2idx,
-        domain_filter="query",
-    )
-    print(f"[INFO] Validation query images: {len(query_ds)}")
+    if args.use_vla:
+        print("[INFO] Computing query embeddings with VLA-enhanced images.")
+        query_embs, query_labels_global = compute_query_embeddings_clip_with_vla(
+            sku_root=args.sku_root,
+            val_image_text=val_image_text,
+            sku2idx=sku2idx,
+            clip_sku_model=clip_model,
+            sku_preprocess=preprocess,
+            vla_policy=vla_policy,
+            vla_clip_model=vla_clip_model,
+            vla_preprocess=vla_preprocess,
+            batch_size=args.batch_size,
+            device=device,
+            num_workers=args.num_workers,
+        )
+        print(
+            f"[INFO] Validation query images (VLA mode): "
+            f"{query_embs.size(0)}"
+        )
+    else:
+        query_ds = DeepFashion2ImageSkuEvalDataset(
+            sku_root=args.sku_root,
+            jsonl_path=val_image_text,
+            preprocess=preprocess,
+            sku2idx=sku2idx,
+            domain_filter="query",
+        )
+        print(f"[INFO] Validation query images: {len(query_ds)}")
 
-    query_embs, query_labels_global, _ = compute_query_embeddings_clip(
-        model=clip_model,
-        dataset=query_ds,
-        batch_size=args.batch_size,
-        device=device,
-        num_workers=args.num_workers,
-    )
+        query_embs, query_labels_global, _ = compute_query_embeddings_clip(
+            model=clip_model,
+            dataset=query_ds,
+            batch_size=args.batch_size,
+            device=device,
+            num_workers=args.num_workers,
+        )
 
     # Keep only queries whose SKU has a student fingerprint
+    num_queries_total = int(query_labels_global.shape[0])
+
     keep_mask = []
     mapped_labels = []
     for lbl in query_labels_global:
@@ -799,7 +1082,7 @@ def main():
 
     print(
         f"[INFO] Kept {query_embs.size(0)} query images whose SKUs have "
-        f"validation fingerprints (out of {len(query_ds)})."
+        f"validation fingerprints (out of {num_queries_total})."
     )
 
     # 7) Compute retrieval metrics (Recall@K, NDCG@K, MRR, latency)
