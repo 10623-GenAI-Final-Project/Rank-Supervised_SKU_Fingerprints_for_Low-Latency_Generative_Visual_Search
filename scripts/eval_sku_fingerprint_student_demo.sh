@@ -30,10 +30,14 @@ CLIP_SKU_CKPT="${CLIP_SKU_CKPT:-/data/patrick/10623GenAI/final_proj/checkpoints/
 #STUDENT_CKPT="${STUDENT_CKPT:-$PROJECT_ROOT/checkpoints/sku_fingerprint_student/sku_fingerprint_student_baseline5_ft_bestshot_bs64_text0p1_unlock2_ep6_lr3e-4_e100_both_txtimg_sd_sub3k_nv4.pt}"
 #STUDENT_CKPT="${STUDENT_CKPT:-$PROJECT_ROOT/checkpoints/sku_fingerprint_student/sku_fingerprint_student_baseline5_ft_bestshot_bs64_text0p1_unlock2_ep6_lr3e-4_e200_both_txtimg_sd_sub3k_nv4.pt}"
 
-STUDENT_CKPT="${STUDENT_CKPT:-$PROJECT_ROOT/checkpoints/sku_fingerprint_student/sku_fingerprint_student_baseline5_ft_bestshot_bs64_text0p1_unlock2_ep6_lr3e-4_e20_both_txtimg_sd_sub5p5k_nv4.pt}"
+#STUDENT_CKPT="${STUDENT_CKPT:-$PROJECT_ROOT/checkpoints/sku_fingerprint_student/sku_fingerprint_student_baseline5_ft_bestshot_bs64_text0p1_unlock2_ep6_lr3e-4_e20_both_txtimg_sd_sub5p5k_nv4.pt}"
 #STUDENT_CKPT="${STUDENT_CKPT:-$PROJECT_ROOT/checkpoints/sku_fingerprint_student/sku_fingerprint_student_baseline5_ft_bestshot_bs64_text0p1_unlock2_ep6_lr3e-4_e60_both_txtimg_sd_sub5p5k_nv4.pt}"
 #STUDENT_CKPT="${STUDENT_CKPT:-$PROJECT_ROOT/checkpoints/sku_fingerprint_student/sku_fingerprint_student_baseline5_ft_bestshot_bs64_text0p1_unlock2_ep6_lr3e-4_e100_both_txtimg_sd_sub5p5k_nv4.pt}"
 #STUDENT_CKPT="${STUDENT_CKPT:-$PROJECT_ROOT/checkpoints/sku_fingerprint_student/sku_fingerprint_student_baseline5_ft_bestshot_bs64_text0p1_unlock2_ep6_lr3e-4_e200_both_txtimg_sd_sub5p5k_nv4.pt}"
+
+# (3) LoRA fineuning
+#STUDENT_CKPT="${STUDENT_CKPT:-$PROJECT_ROOT/checkpoints/sku_fingerprint_student/sku_fingerprint_student_baseline5_ft_bestshot_bs64_text0p1_unlock2_ep6_lr3e-4_e20_both_txtimg_sd_ft1ep_sub5p5k_nv4.pt}"
+STUDENT_CKPT="${STUDENT_CKPT:-$PROJECT_ROOT/checkpoints/sku_fingerprint_student/sku_fingerprint_student_baseline5_ft_bestshot_bs64_text0p1_unlock2_ep6_lr3e-4_e20_both_txtimg_sd_ft3ep_sub5p5k_nv4.pt}"
 
 # Validation split image_text JSONL (usually no multiview for val)
 VAL_IMAGE_TEXT="${VAL_IMAGE_TEXT:-$SKU_ROOT/validation_image_text.jsonl}"
@@ -60,6 +64,7 @@ python -m eval.eval_sku_fingerprint_student \
   --device cuda \
   --ndcg_k 10 \
   --recall_ks 1 5 10 \
+  --eval_cpu_latency \
   --demo_image_num 20 \
   --demo_image_output_dir /data/patrick/10623GenAI/final_proj/demo_output/image_demo_out_20 \
   --demo_text_num 20 \
