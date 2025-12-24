@@ -110,7 +110,7 @@ To quantify the value of (i) SKU-per-vector indexing and (ii) rank-supervised di
   <img src="docs/images/baselines.png" alt="Baseline retrieval systems: ReID best-shot, Frozen CLIP, Fine-tuned CLIP; best-shot vs mean-SKU scoring" width="90%" />
 </div>
 
-### Scoring rules (README-safe)
+### Scoring rules
 
 ```
 score_best(s, q) = max_i ( dot(q, v_{s,i}) ),  i = 1..n_s
