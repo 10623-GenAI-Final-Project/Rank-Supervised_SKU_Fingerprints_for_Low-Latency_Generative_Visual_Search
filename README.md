@@ -104,34 +104,47 @@ These synthetic views expand the set of catalog embeddings used by the aggregato
 
 ## 3.3 Baseline Retrieval Systems
 
-To quantify the value of (i) SKU-per-vector indexing and (ii) rank-supervised distillation, we compare against three baseline retrieval systems summarized in the figure below.
+To quantify the value of (i) SKU-per-vector indexing and (ii) rank-supervised distillation, we compare against three baseline retrieval systems summarized in the figure below. The key difference is how each SKU is represented in the index: **image-level (many vectors per SKU)** with best-shot pooling versus **SKU-per-vector (one vector per SKU)** via mean pooling.
 
 <div align="center">
   <img src="docs/images/baselines.png" alt="Baseline retrieval systems: ReID best-shot, Frozen CLIP, Fine-tuned CLIP; best-shot vs mean-SKU scoring" width="90%" />
 </div>
 
+### Scoring rules (README-safe)
+
+```
+score_best(s, q) = max_i ( dot(q, v_{s,i}) ),  i = 1..n_s
+
+v_mean_s = normalize( (1/n_s) * sum_{i=1..n_s} v_{s,i} )
+score_mean(s, q) = dot(q, v_mean_s)
+```
+
 ### Baseline 1: ReID best-shot (image-only, image-level index)
-- A ResNet-50 ReID model encodes each **catalog crop** into an embedding.
-- A query image is embedded by the same network and retrieval is performed against an **image-level gallery** (many vectors per SKU).
-- SKU ranking uses **best-shot pooling**: for a query embedding \(q\) and SKU \(s\) with catalog embeddings \(\{v_{s,i}\}_{i=1}^{n_s}\),
-  \[
-  \mathrm{score}^{\text{best}}_s(q) = \max_{i=1,\dots,n_s} \; q^\top v_{s,i}.
-  \]
-- This baseline is typically accurate, but increases index size and reduces efficiency because it stores **multiple vectors per SKU**.
+
+- A ResNet-50 ReID model encodes each **catalog crop** into an embedding `v_{s,i}`.
+- A query image is embedded into `q` by the same network.
+- Retrieval is performed against an **image-level gallery** (many vectors per SKU), then reduced to 
+SKU scores via **best-shot pooling**:
+  - `score_best(s, q) = max_i dot(q, v_{s,i})`
+- This baseline is often accurate, but inefficient because it stores **multiple vectors per SKU**.
 
 ### Baseline 2: Frozen CLIP (image+text, SKU-per-vector via mean pooling)
-- A pretrained CLIP model (image and text encoders frozen) produces embeddings for catalog images and queries (image or text).
+
+- A pretrained CLIP model (image and text encoders frozen) produces embeddings for catalog images and 
+queries (image or text).
 - Each SKU is represented by a **single mean catalog embedding**:
-  \[
-  v^{\text{mean}}_s = \mathrm{norm}\!\left(\frac{1}{n_s}\sum_{i=1}^{n_s} v_{s,i}\right),
-  \qquad
-  \mathrm{score}^{\text{mean}}_s(q) = q^\top v^{\text{mean}}_s.
-  \]
-- This yields a **SKU-per-vector** index and fast retrieval, but performance can lag due to domain gap and lack of SKU supervision.
+  - `v_mean_s = normalize((1/n_s) * sum_i v_{s,i})`
+- Retrieval uses a single dot product per SKU:
+  - `score_mean(s, q) = dot(q, v_mean_s)`
+- Fast and memory-friendly, but performance can lag due to domain gap and lack of SKU supervision.
 
 ### Baseline 3: Fine-tuned CLIP (image+text, SKU-per-vector via mean pooling)
-- Same retrieval structure as Baseline 2 (single vector per SKU using mean pooling), but CLIP is **fine-tuned on DF2 SKU labels**.
+
+- Same indexing and scoring as Baseline 2 (one mean vector per SKU), but CLIP is **fine-tuned on DF2 
+SKU labels**.
 - The goal is to strengthen SKU discrimination while keeping **low-latency mean-SKU retrieval**.
+- This reduces the consumer-to-shop domain gap and improves retrieval while keeping 
+**SKU-per-vector** efficiency.
 - This baseline is the strongest “simple” SKU-per-vector approach and also serves as the teacher backbone for our rank-supervised fingerprint distillation.
 
 ---
