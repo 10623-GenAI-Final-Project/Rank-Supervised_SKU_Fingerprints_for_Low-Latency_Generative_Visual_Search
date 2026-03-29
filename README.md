@@ -62,7 +62,7 @@ All preprocessing (cropping, SKU grouping, and image–text JSONL generation) is
 **Training stage (top)**
 
 1. **Baseline CLIP fine-tuning (Baseline 3)**  
-   - ViT-B/32 CLIP is fine-tuned on DF2 SKU labels for both image and text encoders, using SKU-level cross-entropy loss for images and text.
+   - ViT-B/16 CLIP is fine-tuned on DF2 SKU labels for both image and text encoders, using SKU-level cross-entropy loss for images and text.
 
 2. **Stable Diffusion v1.5 LoRA multi-view generation**  
    - Offline SD v1.5 img2img + LoRA produces identity-preserving catalog multi-views.
